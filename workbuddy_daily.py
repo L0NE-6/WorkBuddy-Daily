@@ -596,8 +596,35 @@ def t_accept_all(s, uid, nick, log):
     todo = [t.get("task_code") for t in r.get("data", {}).get("tasks", [])
             if isinstance(t, dict) and t.get("accept_status") == "not_accepted"]
     if todo:
-        s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": todo}, timeout=20, verify=False)
-        log("   📋已接受任务: %s" % ",".join(todo))
+        resp = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": todo},
+                      timeout=20, verify=False)
+        try:
+            accepted = resp.json().get("code") == 0
+        except Exception:
+            accepted = False
+        if not accepted:
+            log("   📋接受任务失败，继续执行已有状态")
+            return
+
+        # The endpoint returns before the task list is updated.  New accounts
+        # otherwise remain visible as `not_accepted`, causing every task
+        # handler below to skip them in the same run.  Poll briefly until the
+        # server reflects the accepted state.
+        pending = set(todo)
+        deadline = time.time() + 15
+        while pending and time.time() < deadline:
+            time.sleep(2)
+            try:
+                check = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
+                current = {t.get("task_code"): t.get("accept_status")
+                           for t in check.get("data", {}).get("tasks", []) if isinstance(t, dict)}
+                pending = {code for code in pending if current.get(code) == "not_accepted"}
+            except Exception:
+                pass
+        if pending:
+            log("   📋已提交接受任务，仍待同步: %s" % ",".join(sorted(pending)))
+        else:
+            log("   📋已接受任务: %s" % ",".join(todo))
 
 
 def t_team_3(s, uid, nick, log):
