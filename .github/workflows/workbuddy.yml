@@ -33,6 +33,7 @@ jobs:
 
       - name: Run WorkBuddy
         env:
+          TZ: Asia/Shanghai  # runner 默认 UTC：不设置会导致日志时间为 UTC、补签"昨日"按 UTC 日期计算而错位一天
           WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: python workbuddy_daily.py
