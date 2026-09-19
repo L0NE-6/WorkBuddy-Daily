@@ -795,20 +795,31 @@ def t_black_cat(s, uid, nick, log):
     if st in ("completed", "claimed"):
         return
     if not within_night_window():
-        hour = time.localtime().tm_hour
-        log("   夜猫子: 仅23:00-08:00计数（CST），当前%d点，跳过" % hour)
+        try:
+            import datetime as _dt
+            _now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
+            hour = "北京时间%d:%02d" % (_now.hour, _now.minute)
+        except Exception:
+            hour = "北京时间%s点" % time.localtime().tm_hour
+        log("   夜猫子: 仅23:00-08:00计数（CST），当前%s，跳过" % hour)
         return
     need = (tgt or 3) - (cur or 0)
-    for i in range(max(0, need)):
-        conv_id, txt = webchat(s, "night", ["今天天气怎么样？", "1+1等于几？", "讲个笑话"][i % 3])
-        if txt:
+    prompts = ["今天天气怎么样？", "1+1等于几？", "讲个笑话", "推荐一本书",
+               "写一首短诗", "简单解释下黑洞", "帮我列个购物清单", "讲个冷知识"]
+    for i in range(8):  # 最多尝试 8 次对话，直到 3/3，防单次失败卡进度
+        st, cur, tgt = prog(s, "black_cat")
+        if st in ("completed", "claimed") or (cur or 0) >= (tgt or 3):
+            break
+        conv_id, txt = webchat(s, "night", prompts[i % len(prompts)])
+        ok = bool(txt and txt.strip())
+        if ok:
             evs, _ = chat_request_events(uid, nick, conv_id, "聊天", txt)
             report(s, uid, nick, evs)
-        time.sleep(5)
-        st, cur, tgt = prog(s, "black_cat")
-        if st in ("completed", "claimed"):
-            break
-    log("   夜猫子: %s %s/%s" % (prog(s, "black_cat")[0], prog(s, "black_cat")[1], prog(s, "black_cat")[2]))
+        log("   夜猫子: 第%d次对话 %s（回复%d字）" % (i + 1, "✅" if ok else "❌失败", len(txt or "")))
+        time.sleep(8)
+    time.sleep(3)
+    st, cur, tgt = prog(s, "black_cat")
+    log("   夜猫子: %s %s/%s" % (st, cur, tgt))
 
 
 def t_expert_5(s, uid, nick, log):
