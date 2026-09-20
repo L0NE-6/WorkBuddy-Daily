@@ -807,19 +807,16 @@ def t_black_cat(s, uid, nick, log):
         log("   夜猫子: 仅23:00-08:00计数（CST），当前北京时间%d点，跳过" % beijing_now().hour)
         return
     prompts = ["今天天气怎么样？", "1+1等于几？", "讲个笑话"]
-    # 最多 8 次尝试直到 3/3：单次对话失败不再永久卡死（每轮复查进度，完成即停）
-    for attempt in range(8):
-        st, cur, tgt = prog(s, "black_cat")
-        if st in ("completed", "claimed") or (cur or 0) >= (tgt or 3):
-            break
+    # 官方规则：每晚23:00-08:00对话≥1次即计1天，累计3天开盲盒 → 每晚只需1次成功对话。
+    # 策略：首次失败最多重试2次（合计最多3次尝试）；有模型响应即停；每晚只计1次，多聊无效。
+    for attempt in range(3):
         conv_id, txt = webchat(s, "night", prompts[attempt % len(prompts)])
         if txt:
             evs, _ = chat_request_events(uid, nick, conv_id, "聊天", txt)
             report(s, uid, nick, evs)
             log("   夜猫子: 第%d次对话 ✅（回复%d字）" % (attempt + 1, len(txt)))
-        else:
-            log("   夜猫子: 第%d次对话 ❌（无回复，将重试）" % (attempt + 1))
-        time.sleep(5)
+            break
+        log("   夜猫子: 第%d次对话 ❌（无回复%s）" % (attempt + 1, "，将重试" if attempt < 2 else "，已达重试上限"))
     st, cur, tgt = prog(s, "black_cat")
     log("   夜猫子: %s %s/%s" % (st, cur, tgt))
 
