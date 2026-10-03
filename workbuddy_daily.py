@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.0
+🌱 WorkBuddy Daily - 全能签到脚本 v3.1
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -60,6 +60,9 @@
    WORKBUDDY_MP_GAP          【可选】mp 对话事件间隔秒数（默认 45，可调小提速）
 
 获取变量值（首次必看）
+   ⚠️ WorkBuddy 5.6.2+ 客户端默认开启 AtRestEncryption：认证文件里的 accessToken/refreshToken
+      变成 AES-256-GCM 信封（{"$wbEncrypted":1,"envelope":...}，密钥只在客户端进程内存），
+      直接拷贝无法使用 —— 这种情形请改用 python workbuddy_login.py（短信登录，直接下发明文）
    第一步：在电脑上安装并登录 WorkBuddy 桌面端
    第二步：登录成功后，用记事本打开下面的文件：
        C:/Users/你的用户名/AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
@@ -333,6 +336,9 @@ def _parse_env_tokens(raw):
         line = line.strip().strip('"').strip("'").strip()
         if not line:
             continue
+        if "$wbEncrypted" in line or '"envelope"' in line:
+            # 新版客户端（5.6.2+）加密信封——不是凭据，丢弃后由启动诊断明确指出
+            continue
         # maxsplit=2：RT 里若含冒号也不会被截断（旧写法取 parts[2] 会丢尾巴）
         parts = line.split(":", 2)
         if len(parts) == 3:
@@ -400,6 +406,10 @@ def _token_sanity(rt, at):
     for name, tok in (("RT", rt), ("AT", at)):
         tok = (tok or "").strip()
         if not tok:
+            continue
+        if "$wbEncrypted" in tok or '"envelope"' in tok:
+            tips.append("%s 是 WorkBuddy 5.6.2+ 的 AtRestEncryption 加密信封（不是明文 JWT）——密钥只驻留" 
+                        "客户端进程内存，无法直接使用；请用 python workbuddy_login.py（短信登录）获取明文凭据" % name)
             continue
         if not tok.startswith("eyJ") or tok.count(".") != 2:
             tips.append("%s 不是 eyJ 开头的三段式 JWT（长度 %d）——被截断、带了引号/空格，或粘错了字段" % (name, len(tok)))
@@ -619,6 +629,9 @@ def load_accounts():
         lines = [x for x in _raw.replace("@", "\n").splitlines() if x.strip()]
         kinds = []
         for x in lines[:5]:
+            if "$wbEncrypted" in x or '"envelope"' in x:
+                kinds.append("加密信封 ✗（5.6.2+ AtRestEncryption，需改用 workbuddy_login.py）")
+                continue
             parts = x.split(":", 2)
             if len(parts) >= 3 and not parts[0].startswith("eyJ"):
                 kinds.append("手机号:AT:RT ✓")
@@ -632,6 +645,7 @@ def load_accounts():
         print("      若出现「无法识别」：复制不完整 / 不是 eyJ 开头的 JWT / 混入了全角逗号冒号；")
         print("      正确姿势（每行一个）：手机号:AT:RT  或  AT:RT（AT/RT 均为 eyJ 长串，英文冒号）")
         print("      青龙用户：确认变量名完全一致、且变量处于「启用」状态；改完直接重跑本任务即可")
+        print("      若出现「加密信封」：新版客户端把凭据加了密，无法直接拷贝——请用 workbuddy_login.py")
     else:
         print("   ℹ️ 未读到 WORKBUDDY_REFRESH_TOKEN：青龙请确认变量名/启用状态；")
         print("      GitHub Actions 请确认已加到 Settings → Secrets → Actions（名字大小写一致）")
