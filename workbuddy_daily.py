@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.8
+🌱 WorkBuddy Daily - 全能签到脚本 v2.9
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -112,6 +112,7 @@
    · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
    · 签到读数：签到后读 /billing/meter/checkin-activity-status（连签天数/累计积分/连签奖励日）
      并做活动到期预警：距 end_time ≤7 天或活动已关闭时，日志给出 ⚠️ 提示
+   · 任务到期预警：未完成任务在 valid_end 前 7 天内（或已过期）时打印 ⏰ 提醒
    · mp 定时任务：Sequential_Tasks_4 用官方 mp 指纹形状（mode=CLOUD、无 rrule），失败回落桌面域
    · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
@@ -2483,7 +2484,11 @@ def t_school_season(s, uid, nick, log):
 
 
 def t_unknown_tasks(s, uid, nick, log):
-    """检测脚本未覆盖的新任务，明确提示"""
+    """任务列表体检：未覆盖的新任务提示 + 未完成任务的有效期预警
+
+    服务端任务行带 valid_start / valid_end（如 Buddy_App_QQ 至 2026-10-10）——
+    过期后就领不到了，所以对「未完成且 7 天内到期 / 已过期」的任务给出 ⏰ 提示。
+    """
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
@@ -2492,7 +2497,8 @@ def t_unknown_tasks(s, uid, nick, log):
              "Sequential_Tasks_4", "Sequential_Tasks_5",
              "Sequential_Tasks_6", "Sequential_Tasks_7", "school_season"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
-    for t in r.get("data", {}).get("tasks", []):
+    rows = r.get("data", {}).get("tasks", [])
+    for t in rows:
         if not isinstance(t, dict):
             continue
         code = t.get("task_code", "")
@@ -2506,6 +2512,29 @@ def t_unknown_tasks(s, uid, nick, log):
             log("   ⚠️新任务需手动: %s %s (%s) — 涉及真实捐款" % (code, t.get("title", ""), desc))
         else:
             log("   ⚠️未覆盖新任务: %s %s (%s) — 请反馈更新脚本" % (code, t.get("title", ""), desc))
+    # 有效期预警：未完成但即将过期（或已过期）的任务
+    import datetime
+    today = beijing_today()
+    soon = []
+    for t in rows:
+        if not isinstance(t, dict) or t.get("accept_status") in ("claimed", "completed"):
+            continue
+        ve = str(t.get("valid_end") or "")[:10]
+        if len(ve) < 10:
+            continue
+        try:
+            d = datetime.date(*[int(x) for x in ve.split("-")])
+        except Exception:
+            continue
+        left = (d - today).days
+        if left < 0:
+            soon.append((t.get("task_code", ""), ve, "已过期"))
+        elif left <= 7:
+            soon.append((t.get("task_code", ""), ve, "%d 天后到期" % left))
+    if soon:
+        log("   ⏰ 任务有效期提醒（未完成）:")
+        for code, ve, when in soon[:6]:
+            log("      · %s %s（%s）" % (code, ve, when))
 
 
 # ---------- 开学季活动（school_open_day_2026） ----------
