@@ -155,7 +155,17 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
 ---
 ## 🔑 如何获取变量值（首次必看）
 
-> 从桌面端认证文件中取 `AT` 和 `RT`，拼成 `手机号:AT:RT`。
+> 目标：拿到一行 `手机号:AT:RT`，其中 AT / RT 都是 **`eyJ` 开头的明文 JWT**。
+
+### ✅ 方式 A（推荐）：短信验证码登录工具
+
+```bash
+python workbuddy_login.py
+```
+
+走官方插件登录接口，由**服务端直接下发明文** `accessToken` / `refreshToken`，跑完直接输出一行可粘贴的 `手机号:AT:RT`。不受下面「加密信封」影响 👇
+
+### 🖥️ 方式 B：从桌面端认证文件里取（旧版客户端）
 
 1. **安装并登录** WorkBuddy 桌面端
 2. 用记事本打开下面这个文件（`AppData` 是隐藏文件夹，地址栏直接粘贴路径）：
@@ -168,6 +178,16 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
    ```
    1XXXXXXXXXX:eyJhbGciOiJSUzI1NiIs...很长...:eyJhbGciOiJIUzUxMiIs...也很长...
    ```
+
+> ⛔ **WorkBuddy 5.6.2+ 的重要变化**：客户端默认强制开启 **AtRestEncryption**，认证文件里的 `accessToken` / `refreshToken` **不再是明文**，而是 AES-256-GCM 加密信封：
+> ```json
+> { "auth": { "accessToken": { "$wbEncrypted": 1, "envelope": "……base64……" } } }
+> ```
+> 解密密钥**不落盘**（只驻留客户端进程内存），所以这种值**没法直接拿来用** —— 脚本会明确告诉你「这是加密信封，需改用 workbuddy_login.py」。
+>
+> **自检**：值以 `{"$wbEncrypted"` 开头（或含 `"envelope"`）＝ 信封，不可用；以 `eyJ` 开头 ＝ 明文，可用。
+>
+> **解法**：用方式 A（`python workbuddy_login.py`）；或临时在旧版本客户端上登录后按方式 B 取。
 
 > ⚠️ AT 和 RT 之间用**英文冒号 `:`** 分隔；等号后面的引号不要带
 > ⚠️ **RT 是你唯一的续期凭据，泄露了别人就能操作你的账号**
@@ -227,6 +247,7 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 > | `RT 的 typ=Bearer（应为 Offline）` | **AT/RT 写反了**——顺序必须是 `手机号:AT:RT` |
 > | `RT 不是 eyJ 开头的三段式 JWT` | 被截断，或带了引号/空格/换行/中文冒号 |
 > | `签发域是 …，不是 CN 站` | 粘成了国际版或其他应用的 token（CN 站合法签发域是 `www.codebuddy.cn/auth/realms/copilot`） |
+> | 值是 `{"$wbEncrypted":1,…}` 或含 `"envelope"` | **新版客户端加密信封**（5.6.2+ AtRestEncryption）——解密密钥不落盘（只在客户端进程内存），改用 `python workbuddy_login.py` 短信登录取明文 |
 >
 > 另外两种体检看不出来的情况：③ 该 RT 已被其他工具（面板/网关/另一台机器）轮换过；④ 粘的是 `CodeBuddyExtension\Data\Public\auth` 里**别的应用**的 token。最稳的做法：`python workbuddy_login.py` 重新登录拿最新一行。
 
