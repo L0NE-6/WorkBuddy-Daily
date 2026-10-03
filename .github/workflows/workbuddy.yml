@@ -39,6 +39,8 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           BARK_URL: ${{ secrets.BARK_URL }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
           WORKBUDDY_TASKS: ${{ secrets.WORKBUDDY_TASKS }}
           WORKBUDDY_SKIP_TASKS: ${{ secrets.WORKBUDDY_SKIP_TASKS }}
           WORKBUDDY_MP_GAP: ${{ secrets.WORKBUDDY_MP_GAP }}
