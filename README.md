@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -41,6 +41,8 @@
 > 日常的 7 点、12 点都不在窗口内，所以必须有 `30 23 * * *` 这个专门的窗口定时，否则夜猫子永远跑不了。
 >
 > 📌 官方规则是「**每天 1 次 × 累计 3 天**」，脚本有响应即停，不会一晚空跑多次。
+>
+> 📢 **通知**：脚本会自动读青龙面板的默认通知配置（`QL_DIR/config/auth.json` 的 token）并直接调面板通知接口——面板里配了啥就用啥，无需再填 webhook；也支持 `DINGTALK_WEBHOOK`（钉钉）等五种渠道。
 
 ```bash
 # 依赖（仅一个）
@@ -61,6 +63,8 @@ pip3 install requests
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
+| `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人 webhook（安全设置：自定义关键词或加签） |
+| `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（机器人选「加签」时必填） |
 | `WORKBUDDY_TASKS` | ⬜ | 可选，白名单子任务（如 `checkin,travel`） |
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，黑名单子任务（如 `lottery,redeem`） |
 | `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件间隔秒数（默认 `45`，调小可提速但可能被上游反作弊回滚） |
@@ -196,6 +200,8 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
+| `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人。安全设置选「自定义关键词」时，标题里带该词即可；选「加签」则再加 `DINGTALK_SECRET` |
+| `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（`SEC` 开头那串） |
 | `WORKBUDDY_TASKS` | ⬜ | 可选，**白名单**：只跑列出的子任务（逗号/空格/顿号分隔，大小写不敏感） |
 | `WORKBUDDY_SKIP_TASKS` | ⬜ | 可选，**黑名单**：跳过列出的子任务（与白名单可叠加，黑名单优先） |
 | `WORKBUDDY_MP_GAP` | ⬜ | 可选，mp 对话事件之间的间隔秒数（默认 `45`） |
@@ -349,8 +355,8 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 - **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族；指纹按**官方小程序源码**口径（`ideVersion/extVersion=2.2.8`、`android 14 / arm64`、`source=mini_program`），对话事件的 `conversationId` / `requestId` / `traceId` 同值传递。
 - **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，杜绝「少报 → 误判达标 → claim 400」。
 - **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
-- **📢 三渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人，可同时配置互不影响。
-  企业微信只需一个 webhook（群设置 → 群机器人 → 添加 → 复制 URL）。
+- **📢 五渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人 + 钉钉群机器人 + **青龙面板默认通知**，配了哪个推哪个，互不影响。
+  企业微信/钉钉只需一个 webhook；青龙用户连 webhook 都不用填——脚本自动读 `QL_DIR/config/auth.json` 的 token 调面板通知接口（`/api/system/notify` 与 `/api/system/message` 两个路由都试，鉴权头/查询参数都兼容）。
 
 ---
 
