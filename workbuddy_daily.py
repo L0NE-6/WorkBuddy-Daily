@@ -34,6 +34,7 @@
 
    📦 下载脚本   从 Releases 下载：完整包 zip / 单文件 workbuddy_daily.py / 登录工具
                  https://github.com/L0NE-6/WorkBuddy-Daily/releases
+                 每次更新单独发一个 Release（v1 → v2 → v3 递增，历史版本保留可下载）
 
 ⌨️ 命令行参数
    python workbuddy_daily.py               全流程：续期 → 查询 → 任务 → 开学季 → 领奖
