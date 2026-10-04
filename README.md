@@ -12,6 +12,7 @@
 <img src="https://img.shields.io/badge/Deps-requests%20only-A78BFA?style=for-the-badge&logo=pypi&logoColor=white" />
 <img src="https://img.shields.io/badge/Self--contained-1%20file-FFC75F?style=for-the-badge&logo=files&logoColor=white" />
 <img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
+<a href="https://github.com/L0NE-6/WorkBuddy-Daily/releases"><img src="https://img.shields.io/badge/%E2%AC%87%20Download-Releases-2ea44f?style=for-the-badge&logo=github" /></a>
 
 </div>
 
@@ -26,6 +27,8 @@
 > 📦 **单文件自包含**：无需任何配套模块（专家市场数据、推送通知全部内置），青龙上传一个 `workbuddy_daily.py` 即可运行。
 >
 > ☁️ **云端部署**：除了青龙，也支持直接跑在 **GitHub Actions** 上，零服务器、定时自动执行。
+>
+> ⬇️ **不想用 git？** 直接到 **[Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)** 下载：完整包 zip（主脚本 + 登录工具 + README + Actions 工作流）、单文件 `workbuddy_daily.py`、登录工具 `workbuddy_login.py`——每个包都附 SHA256 校验值。
 
 ---
 
@@ -38,6 +41,8 @@
 | **3️⃣ 定时任务** | 日常 `0 7,12 * * *` · 夜猫子窗口 `30 23 * * *`（**青龙用本地时间**） |
 
 > 🐧 **命令必须用青龙运行器（高频坑）**：定时任务命令填 **`task workbuddy_daily.py`**（面板「定时任务 → 新建任务」时从脚本列表里选），**不要填裸 `python workbuddy_daily.py`** —— 裸 `python` 调用不会注入面板环境变量，脚本会直接报「请设置环境变量 WORKBUDDY_REFRESH_TOKEN」（issue #16 实证：变量明明存在、测试脚本也能读到，就是它）。
+>
+> ⬇️ 脚本可以从 **[Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)** 下载（青龙只需上传里面的 `workbuddy_daily.py`）。
 
 > 🌙 **为什么需要单独的夜猫定时？** 夜猫子任务只在 **23:00–08:00** 期间计入进度，且要求**真实对话**（不能指纹伪造）。
 > 日常的 7 点、12 点都不在窗口内，所以必须有 `30 23 * * *` 这个专门的窗口定时，否则夜猫子永远跑不了。
