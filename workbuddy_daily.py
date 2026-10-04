@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.1
+🌱 WorkBuddy Daily - 全能签到脚本 v3.2
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -52,6 +52,9 @@
      别名：checkin 签到 / travel 旅行 / lottery 抽奖 / redeem 连登兑换 / gift 礼包补偿
            makeup 补签 / badges 徽章 / blindbox 盲盒 / buddy_info Buddy信息 / desktop 桌面 / school 开学季
      例：只想每天做签到+旅行 → WORKBUDDY_TASKS=checkin,travel（其余任务以后想做时再放开）
+     ⚠️ 若过滤后没有任何「使用类」任务（对话/桌面/文档…），成长中心的「今日活跃
+        （热力墙）」不会被点亮——签到只给积分，不点热力墙（脚本会主动提醒）
+        想两者兼得：WORKBUDDY_TASKS=checkin,travel,chat_5（保留一个对话类任务）
    PUSHPLUS_TOKEN            【可选】PushPlus 推送（微信）
    BARK_URL                  【可选】Bark 推送（iOS），如 https://api.day.app/xxxxxxxx
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
@@ -3169,6 +3172,16 @@ def run_account(idx, acc, do_desktop):
         log("   ⚙️ 任务过滤生效：%s%s" % (
             ("仅执行 " + ",".join(sorted(TASK_ONLY))) if TASK_ONLY else "", 
             (("；跳过 " + ",".join(sorted(TASK_SKIP))) if TASK_SKIP else "")))
+        # 「使用类」任务才会给成长中心记活跃（热力墙）。全被过滤掉时明确提醒：
+        # 签到只给积分、不点热力墙——别把页面上的「开始使用以点亮今日热力墙」当成签到失败
+        _usage = {"chat_5", "model_chat_glm5.2", "desktop", "richmeow_chat", "skill_1", "black_cat",
+                  "expert_5", "expert_team_use_3", "template_5", "create_canvas", "playbook_prompt",
+                  "sequential_tasks_1", "sequential_tasks_3", "sequential_tasks_5",
+                  "automation_1", "library_read", "hp_appearance", "buddy_app", "buddy_app_qq"}
+        _kept = {t for t in (TASK_ONLY or _usage) if t not in TASK_SKIP}
+        if not (_kept & _usage):
+            log("   ⚠️ 未包含任何「使用类」任务 → 成长中心的今日活跃（热力墙）不会点亮")
+            log("      （签到/积分不受影响；想同时点亮热力墙建议保留一个对话类任务：WORKBUDDY_TASKS=checkin,travel,chat_5）")
 
     def _run(label, codes, fn):
         """子任务调度：按 TASK_ONLY / TASK_SKIP 决定是否执行，单项异常不拖垮整轮。"""
