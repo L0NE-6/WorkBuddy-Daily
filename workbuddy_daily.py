@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.2
+🌱 WorkBuddy Daily - 全能签到脚本 v3.3
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -653,6 +653,10 @@ def load_accounts():
         print("   ℹ️ 未读到 WORKBUDDY_REFRESH_TOKEN：青龙请确认变量名/启用状态；")
         print("      GitHub Actions 请确认已加到 Settings → Secrets → Actions（名字大小写一致）")
     print("   📖 获取方式：python workbuddy_login.py（短信登录，直接输出一行可粘贴凭据）")
+    # 青龙专属坑（issue #16 实证）：裸 python 调用不注入面板变量
+    if os.environ.get("QL_DIR") or os.path.exists("/ql"):
+        print("   🐧 检测到青龙环境：任务命令请用青龙运行器 —— `task workbuddy_daily.py`（从脚本列表新建任务）")
+        print("      不要写裸 `python workbuddy_daily.py`：裸 python 不会注入面板变量，就会报这个错")
     sys.exit(1)
 
 
