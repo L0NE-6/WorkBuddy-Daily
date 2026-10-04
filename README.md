@@ -470,6 +470,15 @@ WorkBuddy-Daily/
 
 ---
 
+## 📦 版本与发布
+
+- **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
+- Release 标题括号里是**脚本自身的版本号**（如 `v1（脚本 v3.3）`），与文件头、日志里的版本一致
+- 每个 Release 都带三个资产（完整包 zip / 主脚本 `workbuddy_daily.py` / 登录工具 `workbuddy_login.py`）+ **SHA256 校验值**
+- 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
+
+---
+
 ## 🔒 隐私说明
 
 脚本**不含任何账号、手机号、Token 或设备信息**，所有凭据均由环境变量（或 GitHub Secrets）注入。请妥善保管你的 `wb_refresh_tokens.json`、`WORKBUDDY_ACCESS_TOKEN.txt`、`wb_login_result.json`——这些文件均已被 `.gitignore` 屏蔽，**切勿手动提交**。
