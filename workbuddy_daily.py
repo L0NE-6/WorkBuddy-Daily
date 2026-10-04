@@ -32,6 +32,9 @@
    3. 定时任务     0 7,12 * * *    日常全流程
                   30 23 * * *     夜猫子活动窗口（23:00-08:00，必须单独排程）
 
+   📦 下载脚本   从 Releases 下载：完整包 zip / 单文件 workbuddy_daily.py / 登录工具
+                 https://github.com/L0NE-6/WorkBuddy-Daily/releases
+
 ⌨️ 命令行参数
    python workbuddy_daily.py               全流程：续期 → 查询 → 任务 → 开学季 → 领奖
    python workbuddy_daily.py --refresh     仅刷新所有账号 Token
