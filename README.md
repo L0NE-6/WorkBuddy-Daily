@@ -499,14 +499,12 @@ WorkBuddy-Daily/
 脚本是**完全免费、无广告、无任何功能限制**的（本仓库与发布包也不含你的任何数据）。
 如果它确实帮你省了时间、多领了积分，欢迎请我喝杯咖啡 —— **纯自愿，不影响任何功能**，也不影响我在 Issue 里的响应速度 🙌
 
-<div align="center">
-
-| 💚 微信支付 | 💙 支付宝（支持信用卡 / 花呗） |
-| :---: | :---: |
-| <img src="assets/donate-wechat.png" width="260" alt="微信赞赏码" /> | <img src="assets/donate-alipay.jpg" width="260" alt="支付宝收款码" /> |
-| 扫码即可 | 扫码即可 |
-
-</div>
+<p align="center">
+  <img src="assets/donate-wechat.png" width="260" alt="微信赞赏码" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/donate-alipay.jpg" width="260" alt="支付宝收款码" />
+</p>
+<p align="center"><sub>💚 微信支付（左） &nbsp;|&nbsp; 💙 支付宝（右，支持信用卡 / 花呗）</sub></p>
 
 > 💡 **不花钱也能帮上很多忙**：点个 ⭐ Star、提一个带日志的 Issue、发一个 Pull Request、或者把脚本分享给需要的朋友 —— 这些同样是最好的支持。
 
