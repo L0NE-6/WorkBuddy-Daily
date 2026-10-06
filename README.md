@@ -195,6 +195,8 @@ python workbuddy_login.py
 > **自检**：值以 `{"$wbEncrypted"` 开头（或含 `"envelope"`）＝ 信封，不可用；以 `eyJ` 开头 ＝ 明文，可用。
 >
 > **解法**：用方式 A（`python workbuddy_login.py`）；或临时在旧版本客户端上登录后按方式 B 取。
+>
+> 💡 **想「免粘贴、直接读本机客户端会话」？** 社区项目 `88lin/workbuddy-auto-signin`（★近千、同样单文件）内置了「用本机 WorkBuddy 自带的 Electron 运行时解密 `sym-v1` 信封」的实现（密钥不落盘，只在子进程内存中用 Node `crypto` 做 AES-256-GCM），需本机装有对应版本客户端。本仓库走的是环境变量 + 短信登录（不碰加密文件），两者可互为备用。
 
 > ⚠️ AT 和 RT 之间用**英文冒号 `:`** 分隔；等号后面的引号不要带
 > ⚠️ **RT 是你唯一的续期凭据，泄露了别人就能操作你的账号**
