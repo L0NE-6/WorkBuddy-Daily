@@ -60,7 +60,9 @@ pip3 install requests
 
 ## ☁️ 部署方式二：GitHub Actions（零服务器 · 推荐）
 
-> 本仓库已内置工作流 [`.github/workflows/workbuddy.yml`](.github/workflows/workbuddy.yml)，**Fork 或直接使用本仓库**即可开启云端定时签到。
+> 本仓库已内置工作流 [`.github/workflows/workbuddy.yml`](.github/workflows/workbuddy.yml)，**Fork / Import 到你自己的账号**即可开启云端定时签到。
+>
+> ⚠️ **维护者的这个仓库已关闭 Actions**（不跑定时、也不会再发失败通知）；想用云端定时，请先 **Fork / Import 到你自己的账号**，再按下面的步骤开启。
 
 ### 第 1 步：添加 Secrets（仓库 → Settings → Secrets and variables → Actions）
 
