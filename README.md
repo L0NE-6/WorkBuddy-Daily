@@ -466,6 +466,7 @@ WorkBuddy-Daily/
 ├── workbuddy_login.py       # 登录工具（短信验证码换 Token）
 ├── requirements.txt         # 依赖（仅 requests）
 ├── .gitignore               # 屏蔽凭据/运行数据
+├── assets/                  # 资源（打赏收款码）
 ├── LICENSE                  # MIT 许可证
 └── README.md
 ```
@@ -493,6 +494,24 @@ WorkBuddy-Daily/
 
 ---
 
+## ☕ 支持与投喂
+
+脚本是**完全免费、无广告、无任何功能限制**的（本仓库与发布包也不含你的任何数据）。
+如果它确实帮你省了时间、多领了积分，欢迎请我喝杯咖啡 —— **纯自愿，不影响任何功能**，也不影响我在 Issue 里的响应速度 🙌
+
+<div align="center">
+
+| 💚 微信支付 | 💙 支付宝（支持信用卡 / 花呗） |
+| :---: | :---: |
+| <img src="assets/donate-wechat.png" width="260" alt="微信赞赏码" /> | <img src="assets/donate-alipay.jpg" width="260" alt="支付宝收款码" /> |
+| 扫码即可 | 扫码即可 |
+
+</div>
+
+> 💡 **不花钱也能帮上很多忙**：点个 ⭐ Star、提一个带日志的 Issue、发一个 Pull Request、或者把脚本分享给需要的朋友 —— 这些同样是最好的支持。
+
+---
+
 ## 💬 反馈与贡献
 
 遇到问题、有功能建议，或者发现了更好的实现方式，欢迎：
@@ -505,5 +524,5 @@ WorkBuddy-Daily/
 ---
 
 <div align="center">
-  <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下 ✨</sub>
+  <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下，或者到 <a href="#-支持与投喂">支持与投喂</a> 请我喝杯咖啡 ✨</sub>
 </div>
