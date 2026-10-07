@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.3
+🌱 WorkBuddy Daily - 全能签到脚本 v3.4
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
    一个脚本搞定 WorkBuddy 全部自动化：Token 自动续期、积分/用量查询、
-   18 项成长任务、8 项互动玩法、开学季活动 + 大转盘、小程序成长任务、
+   18 项成长任务、8 项互动玩法、小程序成长任务、
    自动领奖，全部无人值守。
 
 ✨ 特性
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
-   ✅ 成长任务       18 项云端/桌面全覆盖 + 轻量云专家（仅公益专家需真实捐款）
-   🏫 开学季活动     分享/对话/桌面对话/专家 + 幸运大转盘（含瑞幸/KFC/酷狗实物券）
-                     ※ 以服务端 in_period 判定活动期，非进行期自动跳过（不会误报失败）
-   📱 小程序任务     Tasks_1~7 链式任务（均已到账；每日零点解锁一环，日志给出解锁日期）
-                     校园日随开学季结束已从列表撤下（奖励此前已入账）
+   ✅ 成长任务       17 项云端任务全覆盖（含轻量云专家；小程序链式见下一行）
+   📱 小程序任务     Tasks_1~7 链式任务（每日零点解锁一环，日志给出解锁日期）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
@@ -25,6 +22,7 @@
    🔄 API 重试       网络/5xx 自动指数退避重试，写动作间隔可调（--gap）
    🔗 稳定指纹       每账号 md5 派生固定 machineId，桌面/web/小程序三域对齐官方埋点
    🐧 青龙友好       非 Windows 走指纹上报，纯 API 直接跑
+   📦 归档目录       开学季等已结束/已下架的限时任务代码移入 archive/，主脚本保持精简
 
 🚀 使用方法（青龙面板三步）
    1. 上传脚本     workbuddy_daily.py
@@ -37,12 +35,10 @@
                  每次更新单独发一个 Release（v1 → v2 → v3 递增，历史版本保留可下载）
 
 ⌨️ 命令行参数
-   python workbuddy_daily.py               全流程：续期 → 查询 → 任务 → 开学季 → 领奖
+   python workbuddy_daily.py               全流程：续期 → 查询 → 任务 → 领奖
    python workbuddy_daily.py --refresh     仅刷新所有账号 Token
    python workbuddy_daily.py --query       仅查询积分/用量/成长
    python workbuddy_daily.py --no-desktop  跳过桌面任务（非 Windows 默认走指纹上报）
-   python workbuddy_daily.py --no-school   跳过开学季活动
-   python workbuddy_daily.py --school-only 只跑开学季活动（不做成长中心任务）
    python workbuddy_daily.py --only 3      只跑第 3 个账号
    python workbuddy_daily.py --gap 2.0     写动作间隔秒数（默认 1.5，最低 1.0）
    python workbuddy_daily.py --mp-gap 15   mp 对话事件间隔（默认 45，上游反作弊要求真人节奏）
@@ -54,7 +50,7 @@
    WORKBUDDY_TASKS           【可选】白名单：只跑列出的子任务（逗号/空格分隔）
    WORKBUDDY_SKIP_TASKS      【可选】黑名单：跳过列出的子任务
      别名：checkin 签到 / travel 旅行 / lottery 抽奖 / redeem 连登兑换 / gift 礼包补偿
-           makeup 补签 / badges 徽章 / blindbox 盲盒 / buddy_info Buddy信息 / desktop 桌面 / school 开学季
+           makeup 补签 / badges 徽章 / blindbox 盲盒 / buddy_info Buddy信息 / desktop 桌面
      例：只想每天做签到+旅行 → WORKBUDDY_TASKS=checkin,travel（其余任务以后想做时再放开）
      ⚠️ 若过滤后没有任何「使用类」任务（对话/桌面/文档…），成长中心的「今日活跃
         （热力墙）」不会被点亮——签到只给积分，不点热力墙（脚本会主动提醒）
@@ -90,18 +86,12 @@
    ⚠️ RT 是你唯一的续期凭据，泄露了别人就能操作你的账号
 
 📦 任务清单
-   ☁️ 成长中心任务（18 项，云端 + 桌面）
+   ☁️ 成长中心任务（17 项，云端 + 桌面）
       每日签到 · 设计创意模式 · 探索优秀灵感 · 桌面端对话 · 尝鲜热门技能
       体验资料库 · 腾讯轻量云专家 · 和平精英主题 · 发现应用 · 企鹅教师助手
       GLM-5.2模型对话 · 和AI聊天5次 · 夜猫子活动 · 召唤3次专家团 · 召唤5次专家
       使用5个模板 · 设置自动化任务 · 领取Buddy
-      ❌ 公益专家（需真实捐款，脚本不做）
-   🏫 开学季活动（4 项 + 大转盘）
-      ※ 活动期自适应：非进行期自动跳过；2026 开学季已于 9 月下旬结束
-      分享活动给好友 · 与AI对话3次 · 桌面端对话1次 · 召唤开学季专家
-      ❌ 学生认证（需微信实名，人工环节）
-      🎰 幸运大转盘：抽到余额为 0（积分 6/66 + 瑞幸/KFC/酷狗实物券）
-   📱 小程序成长任务（8 项，需 X-Client-Platform: miniprogram 头）
+   📱 小程序成长任务（7 项，需 X-Client-Platform: miniprogram 头）
       Sequential_Tasks_1 完成 1 次对话（+100c+5e）
       Sequential_Tasks_2 选中专家并完成对话（+200c+5e）
       Sequential_Tasks_3 完成 5 次对话（+300c+5e）
@@ -109,10 +99,13 @@
       Sequential_Tasks_5 使用 1 次 GLM5.2（+100c+5e）
       Sequential_Tasks_6 完成 10 次对话
       Sequential_Tasks_7 体验灵感功能
-      school_season 校园日（+100c+5e，开学季结束已撤下）
       ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环（脚本自动推进，日志给出解锁日期）
    🎮 互动玩法（8 项）
       抽奖 · 盲盒 · Buddy信息 · 派猫猫旅行 · 连签兑换 · 补签卡 · 礼包补偿 · 徽章
+
+   📦 已归档（活动结束 / 服务端已下架，代码移出主脚本 → archive/）
+      开学季活动 school_open_day_2026（2026-09 下旬结束）+ 校园日 mp 任务 school_season
+      公益专家 Expert_Philanthropy（服务端已下架；本就需真实捐款，从不下发）
 
 ⚙️ 特别之处
    · 续期节奏：距上次刷新 >10 天 或 AT 7 天内过期，自动刷新（离线会话 30 天失效）
@@ -123,8 +116,10 @@
    · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
    · 真实会话 id：专家/技能任务的 requestId/messageId 取自真实对话的服务端消息 id（cmb- 形态）
    · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
-   · 签到读数：签到后读 /billing/meter/checkin-activity-status（连签天数/累计积分/连签奖励日）
+   · 签到读数：签到后读 /billing/meter/checkin-activity-status（签到连签/累计积分/连签奖励日）
      并做活动到期预警：距 end_time ≤7 天或活动已关闭时，日志给出 ⚠️ 提示
+   · 两种连签分开显示：签到连签（积分签到活动 streak_days）与活跃连签（成长中心热力墙
+     growth/streak）是两套不同指标，日志/推送统一写作「签到连签N天 | 活跃连签N天」，不再混淆
    · 任务到期预警：未完成任务在 valid_end 前 7 天内（或已过期）时打印 ⏰ 提醒
    · mp 定时任务：Sequential_Tasks_4 用官方 mp 指纹形状（mode=CLOUD、无 rrule），失败回落桌面域
    · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
@@ -171,6 +166,7 @@ except Exception:
     pass
 
 BASE = "https://www.workbuddy.cn"
+CBDOMAIN = "https://www.codebuddy.cn"   # codebuddy 域（小程序埋点 / 技能市场 / 桌面任务）
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.5.4 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
 
 # ---------- 任务代码 → 中文名映射 ----------
@@ -673,8 +669,6 @@ WRITE_GAP = 1.5  # 写动作间隔秒数（--gap 可覆盖，最低 1.0）
 MP_CHAT_GAP = 45.0  # mp 对话事件“真人节奏”间隔秒数（上游实测 45s；--mp-gap / WORKBUDDY_MP_GAP 可覆盖）
 QUERY_ONLY = "--query" in sys.argv
 NO_DESKTOP = "--no-desktop" in sys.argv
-NO_SCHOOL = "--no-school" in sys.argv
-SCHOOL_ONLY = "--school-only" in sys.argv
 if "--gap" in sys.argv:
     try:
         WRITE_GAP = max(1.0, float(sys.argv[sys.argv.index("--gap") + 1]))
@@ -717,7 +711,7 @@ def want(*codes):
     · 黑名单命中即跳过；白名单非空时未列出的也跳过（两者可叠加）
     · 代号大小写不敏感；常用别名：checkin 每日签到 / travel 旅行 / lottery 抽奖 /
       redeem 连登兑换 / gift 礼包补偿 / makeup 补签 / badges 徽章 / blindbox 盲盒 /
-      buddy_info Buddy 信息 / desktop 桌面任务 / school 开学季
+      buddy_info Buddy 信息 / desktop 桌面任务
     · 只影响「主动执行」：accept、领奖、前置补救（first_buddy）不受影响，
       因此被跳过的任务不会被完成，也就不会被领奖计入积分
     """
@@ -1017,18 +1011,30 @@ def _checkin_activity_warn(sd):
     return ""
 
 
+def _checkin_status(s):
+    """签到活动读数（只读）：streak_days / total_credits / is_streak_day / next_streak_day / end_time。
+
+    与成长中心的「活跃连签」（/v2/activity/growth/streak，热力墙/使用事件驱动）是两套
+    完全不同的指标——日志/推送里一律写作「签到连签」以免混淆（issue #21）。
+    """
+    try:
+        return (s.post(BASE + "/v2/billing/meter/checkin-activity-status", json={}, timeout=20,
+                       verify=False).json().get("data") or {})
+    except Exception:
+        return {}
+
+
 def _checkin_tail(s):
-    """签到活动读数尾注：连签天数 / 累计积分 / 连签奖励日 / 到期预警（只读，失败返回空串）。
+    """签到活动读数尾注：签到连签 / 累计积分 / 连签奖励日 / 到期预警（只读，失败返回空串）。
 
     上游多仓共用口径：POST /v2/billing/meter/checkin-activity-status 返回
     today_checked_in / streak_days / total_credits / is_streak_day / next_streak_day。
     """
     try:
-        sd = (s.post(BASE + "/v2/billing/meter/checkin-activity-status", json={}, timeout=20,
-                     verify=False).json().get("data") or {})
+        sd = _checkin_status(s)
         parts = []
         if sd.get("streak_days") is not None:
-            parts.append("连签%s天" % sd["streak_days"])
+            parts.append("签到连签%s天" % sd["streak_days"])
         if sd.get("total_credits") is not None:
             parts.append("累计%s" % sd["total_credits"])
         if sd.get("is_streak_day"):
@@ -1957,7 +1963,7 @@ def _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill):
             pass
         try:
             # 技能 ID：市场列表命中则用真 id，否则用上游实测可用的技能 id
-            skills_r = api_retry(s, "POST", SCHOOL_DOMAIN + "/v2/operation-platform/market/skill/list",
+            skills_r = api_retry(s, "POST", CBDOMAIN + "/v2/operation-platform/market/skill/list",
                                  body={"page": 1, "page_size": 10})
             skills = (skills_r.json().get("data") or {}).get("skills") or []
             skill_id = next((sk.get("id") for sk in skills if SKILL_NAME in str(sk.get("name", ""))), "")
@@ -2277,7 +2283,7 @@ def mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id, activity_id
     链：expert_summon_click → expert_summoned → expert_actual_use → chat_request_send
     """
     rid = "wb2api-" + str(uuid.uuid4())
-    cat = SCHOOL_EXPERT_CATEGORY
+    cat = MP_EXPERT_CATEGORY
     evs = [
         {"eventCode": "expert_summon_click", "id": expert_id, "name": expert_id,
          "expertTitle": expert_name, "type": cat, "position": 0},
@@ -2362,6 +2368,35 @@ def mp_report(s, uid, nick, events):
         return r.status_code
     except Exception:
         return 0
+
+
+MP_EXPERT_CATEGORY = "16-BackToSchool"
+MP_EXPERT_FALLBACK = {"WorkspaceBuilder": {"id": "WorkspaceBuilder", "name": "工作台搭建师"}}
+
+
+def _mp_pick_expert(s):
+    """取一个真实专家 id/name（mp 专家类任务判据用）。
+
+    优先拉线上专家列表（use_count 倒序，字段名 expert_id —— 不是 id）；
+    拉不到时回落内置兜底 id，保证判据事件仍带真实专家身份。
+    """
+    body = {"edition_mode": "all,domestic", "page": 1, "page_size": 20,
+            "sort_by": "use_count", "sort_order": "desc",
+            "categories": [MP_EXPERT_CATEGORY], "expert_type": "agent"}
+    try:
+        r = api_retry(s, "POST", CBDOMAIN + "/v2/operation-platform/market/expert/list", body=body)
+        for e in ((r.json().get("data") or {}).get("experts") or []):
+            eid = e.get("expert_id")
+            if not eid:
+                continue
+            dn = e.get("display_name_zh") or {}
+            name = (dn.get("zh") if isinstance(dn, dict) else dn) or eid
+            return eid, name
+    except Exception:
+        pass
+    for eid, info in MP_EXPERT_FALLBACK.items():
+        return eid, info["name"]
+    return "", ""
 
 
 def _mp_prog(s, code):
@@ -2531,7 +2566,7 @@ def t_sequential_tasks_2(s, uid, nick, log):
     判据 = 单条 mp 指纹 expert_actual_use（不带 activityId/conversationId）。
     """
     def _evs(i):
-        eid, ename = _school_fetch_expert(s)
+        eid, ename = _mp_pick_expert(s)
         if not eid:
             eid, ename = "WorkspaceBuilder", "专家"
         return [mp_mini_expert_event(uid, nick, eid, ename)]
@@ -2607,13 +2642,6 @@ def t_sequential_tasks_7(s, uid, nick, log):
     _mp_do_task(s, uid, nick, "Sequential_Tasks_7", log, _evs, "小程序灵感功能", target=1)
 
 
-def t_school_season(s, uid, nick, log):
-    """小程序成长任务 school_season 校园日：mini 对话 + activityId（+100c+5e）"""
-    _mp_do_task(s, uid, nick, "school_season", log,
-                _mp_chat_evs(uid, nick, "wbmps", activity_id=SCHOOL_ACTIVITY_ID),
-                "校园日活动", target=1, pace=True)
-
-
 def t_unknown_tasks(s, uid, nick, log):
     """任务列表体检：未覆盖的新任务提示 + 未完成任务的有效期预警
 
@@ -2626,7 +2654,7 @@ def t_unknown_tasks(s, uid, nick, log):
              "template_5", "automation_1", "workstation_expert",
              "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
              "Sequential_Tasks_4", "Sequential_Tasks_5",
-             "Sequential_Tasks_6", "Sequential_Tasks_7", "school_season"}
+             "Sequential_Tasks_6", "Sequential_Tasks_7"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     rows = r.get("data", {}).get("tasks", [])
     for t in rows:
@@ -2666,279 +2694,6 @@ def t_unknown_tasks(s, uid, nick, log):
         log("   ⏰ 任务有效期提醒（未完成）:")
         for code, ve, when in soon[:6]:
             log("      · %s %s（%s）" % (code, ve, when))
-
-
-# ---------- 开学季活动（school_open_day_2026） ----------
-SCHOOL_DOMAIN = "https://www.codebuddy.cn"
-SCHOOL_BASE = SCHOOL_DOMAIN + "/portal/activity/school"
-SCHOOL_FRESHMAN = SCHOOL_DOMAIN + "/portal/activity/freshman"
-SCHOOL_TEACHER = SCHOOL_DOMAIN + "/portal/activity/teacher"
-SCHOOL_ACTIVITY_ID = "school_open_day_2026"
-MP_UA = ("Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 "
-         "MiniProgramEnv/android; wkbrowser xweb)")
-SCHOOL_EXPERT_CATEGORY = "16-BackToSchool"
-SCHOOL_EXPERT_FALLBACK = {"expert-school-01": {"id": "expert-school-01", "name": "开学季助手", "profession": "教育"}}
-LOTTERY_PRIZE_LABELS = {
-    "school_credit_6": "6积分", "school_credit_66": "66积分",
-    "school_voucher_luckin": "瑞幸咖啡15元券", "school_voucher_kfc_ok": "肯德基OK餐券",
-    "school_voucher_kfc_ice": "肯德基冰淇淋券", "school_voucher_kugou": "酷狗会员月卡券",
-}
-# 学校活动任务：manual=人工跳过, report=遥测点亮, share=share-complete
-SCHOOL_TASK_MODES = {
-    "task_student_verify": {"mode": "manual", "note": "微信学生认证（人工）"},
-    "share_invite": {"mode": "share", "note": "分享活动给好友"},
-    "chat_3_times": {"mode": "report", "note": "与AI对话3次", "kind": "mini_chat"},
-    "desktop_chat_1_time": {"mode": "report", "note": "桌面端对话1次", "kind": "desktop_seq"},
-    "expert_use": {"mode": "report", "note": "召唤开学季专家并对话", "kind": "expert"},
-}
-
-
-def _school_session(at):
-    """用现有 AT 创建 school 活动会话（小程序 UA + codebuddy 域）。"""
-    s = requests.Session()
-    s.trust_env = False
-    s.headers.update({"Authorization": "Bearer " + at, "Accept": "application/json",
-                      "Content-Type": "application/json", "User-Agent": MP_UA,
-                      "Referer": "https://www.codebuddy.cn/"})
-    return s
-
-
-def _school_get(s, url):
-    return api_retry(s, "GET", url)
-
-
-def _school_post(s, url, body=None):
-    return api_retry(s, "POST", url, body=body)
-
-
-def _school_report(s, uid, nick, events, host=None, desktop=False):
-    """开学季事件上报。host 默认 codebuddy.cn；desktop=True 时走 copilot 域（桌面任务判据）。"""
-    target = host or SCHOOL_DOMAIN
-    if desktop:
-        out = {"common": {"userId": uid, "userNickname": nick, "ideName": "WorkBuddy",
-                          "ideType": "WorkBuddy", "machineId": derive_id(uid, "machine"),
-                          "mode": "LOCAL", "userAgent": UA, "os": "win32",
-                          "timezone": "Asia/Shanghai"},
-               "events": events}
-        return api_retry(s, "POST", "https://copilot.tencent.com/v2/report", body=out,
-                         headers={"X-Product": "SaaS"})
-    out = {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
-                      "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
-                      "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
-           "events": events}
-    return api_retry(s, "POST", target + "/v2/report", body=out)
-
-
-def _school_fetch_expert(s):
-    """拉取 BackToSchool 分类的真实专家（字段名对齐上游 school.fetch_school_expert）。"""
-    body = {"edition_mode": "all,domestic", "page": 1, "page_size": 20,
-            "sort_by": "use_count", "sort_order": "desc",
-            "categories": [SCHOOL_EXPERT_CATEGORY], "expert_type": "agent"}
-    try:
-        r = _school_post(s, SCHOOL_DOMAIN + "/v2/operation-platform/market/expert/list", body)
-        d = r.json()
-        experts = (d.get("data") or {}).get("experts") or []
-        for e in experts:
-            eid = e.get("expert_id")          # ← 正确字段名（不是 "id"）
-            if not eid:
-                continue
-            dn = e.get("display_name_zh") or {}
-            name = (dn.get("zh") if isinstance(dn, dict) else dn) or eid
-            return eid, name
-    except Exception:
-        pass
-    for eid, info in SCHOOL_EXPERT_FALLBACK.items():
-        return eid, info["name"]
-    return "", ""
-
-
-def _school_desktop_seq_event(uid, nick, conv_id):
-    """模拟一次桌面对话的 6 连指纹事件 + activityId（走 desktop_chat_sequence 同款形状）。"""
-    evs = desktop_chat_sequence(uid, nick, conv_id, conv_id, conv_id)
-    fp = desktop_fingerprint(uid, nick)
-    out = []
-    for e in evs:
-        m = dict(e)
-        m.update(fp)
-        m["activityId"] = SCHOOL_ACTIVITY_ID
-        out.append(m)
-    return out
-
-
-def _school_expert_event(uid, nick, expert_id, expert_name, conv_id):
-    """专家 4 事件链（含 activityId，开学季 expert_use 判据）。"""
-    return mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id,
-                                activity_id=SCHOOL_ACTIVITY_ID)
-
-
-def _school_fetch_tasks(s):
-    r = _school_get(s, SCHOOL_BASE + "/tasks")
-    d = r.json()
-    if d.get("code") != 0:
-        return [], False
-    data = d.get("data") or {}
-    return data.get("tasks") or [], data.get("in_period", False)
-
-
-def _school_viewed(s, code):
-    r = _school_post(s, SCHOOL_BASE + "/tasks/%s/viewed" % code)
-    return r.json().get("code") == 0
-
-
-def _school_share_complete(s):
-    r = _school_post(s, SCHOOL_BASE + "/tasks/share-complete", {"channel": "wechat"})
-    return r.json().get("code") == 0
-
-
-def _school_claim(s, code):
-    r = _school_post(s, SCHOOL_BASE + "/tasks/%s/claim" % code)
-    return r.json().get("code") == 0
-
-
-def school_run_tasks(s, uid, nick, log):
-    """执行开学季任务的完整流程：viewed → 判据 → 轮询 → claim → 抽奖。"""
-    tasks, in_period = _school_fetch_tasks(s)
-    if not in_period:
-        log("  🏫 开学季活动非进行期，跳过")
-        return
-    log("  🏫 ── 开学季活动（%d 个任务）──" % len(tasks))
-    for t in tasks:
-        code = t.get("task_code", "")
-        status = t.get("status", "")
-        spec = SCHOOL_TASK_MODES.get(code)
-        if not code:
-            continue
-        if status == "claimed":
-            log("   %s: 已领取，跳过" % code)
-            continue
-        if status == "completed":
-            # 已完成未领奖 → 补领（此前误判为"跳过"，导致奖励漏领）
-            if _school_claim(s, code):
-                log("   %s: 🎁 补领奖成功" % code)
-            else:
-                log("   %s: 补领奖失败（可稍后重试）" % code)
-            time.sleep(WRITE_GAP)
-            continue
-        if spec is None:
-            log("   %s: 未知任务类型，跳过" % code)
-            continue
-        mode = spec["mode"]
-        if mode == "manual":
-            log("   %s: 人工环节（%s），跳过" % (code, spec.get("note", "")))
-            continue
-        # viewed 激活
-        try:
-            if _school_viewed(s, code):
-                log("   %s: viewed 激活" % code)
-                time.sleep(WRITE_GAP)
-        except Exception as e:
-            log("   %s: viewed 失败 %s" % (code, str(e)[:60]))
-            continue
-        # 判据
-        ok = False
-        if mode == "share":
-            try:
-                ok = _school_share_complete(s)
-                log("   %s: share-complete %s" % (code, "✅" if ok else "❌"))
-                time.sleep(WRITE_GAP)
-            except Exception as e:
-                log("   %s: share 失败 %s" % (code, str(e)[:60]))
-        elif mode == "report":
-            kind = spec.get("kind", "")
-            conv_id = "conv-" + str(uuid.uuid4())
-            if kind == "mini_chat":
-                for i in range(3):
-                    try:
-                        mp_report(s, uid, nick, [mp_chat_event(
-                            uid, nick, "wbsc-" + str(uuid.uuid4()),
-                            activity_id=SCHOOL_ACTIVITY_ID)])
-                        log("   %s: chat #%d/3 ✅" % (code, i + 1))
-                        time.sleep(WRITE_GAP)
-                    except Exception as e:
-                        log("   %s: chat #%d 失败 %s" % (code, i + 1, str(e)[:60]))
-            elif kind == "desktop_seq":
-                evs = _school_desktop_seq_event(uid, nick, conv_id)
-                try:
-                    _school_report(s, uid, nick, evs, desktop=True)
-                    log("   %s: desktop_seq (copilot域) ✅" % code)
-                    time.sleep(WRITE_GAP)
-                except Exception as e:
-                    log("   %s: desktop 失败 %s" % (code, str(e)[:60]))
-            elif kind == "expert":
-                eid, ename = _school_fetch_expert(s)
-                if not eid:
-                    log("   %s: 未取到专家，跳过" % code)
-                else:
-                    try:
-                        evs = _school_expert_event(uid, nick, eid, ename, conv_id)
-                        mp_report(s, uid, nick, evs)
-                        log("   %s: expert 4事件链 ✅ (%s)" % (code, ename))
-                        time.sleep(WRITE_GAP)
-                    except Exception as e:
-                        log("   %s: expert 失败 %s" % (code, str(e)[:60]))
-        # 轮询等待完成
-        for _ in range(5):
-            time.sleep(2)
-            try:
-                ts2, _ = _school_fetch_tasks(s)
-                after = next((x for x in ts2 if x.get("task_code") == code), None)
-                if after and after.get("status") in ("completed", "claimed"):
-                    log("   %s: ✅ 已完成" % code)
-                    break
-            except Exception:
-                pass
-        # claim
-        try:
-            ts3, _ = _school_fetch_tasks(s)
-            after = next((x for x in ts3 if x.get("task_code") == code), None)
-            if after and after.get("status") == "completed":
-                if _school_claim(s, code):
-                    log("   %s: 🎁 已领奖" % code)
-                    time.sleep(WRITE_GAP)
-        except Exception as e:
-            log("   %s: claim 失败 %s" % (code, str(e)[:60]))
-
-
-def school_lottery(s, uid, nick, log):
-    """开学季幸运大转盘：查余额 → 循环抽到 0。"""
-    try:
-        r = _school_get(s, SCHOOL_BASE + "/config")
-        d = r.json()
-        if d.get("code") != 0:
-            log("  🏫 lottery config 失败")
-            return
-        chance = (d.get("data") or {}).get("chance") or {}
-        bal = chance.get("balance", 0)
-        if not bal or bal <= 0:
-            log("  🏫 lottery 余额=0，无需抽奖")
-            return
-        log("  🏫 lottery 余额=%s，开始抽奖..." % bal)
-        results = []
-        while bal > 0:
-            time.sleep(WRITE_GAP)
-            draw_uuid = str(uuid.uuid4())
-            try:
-                r2 = _school_post(s, SCHOOL_BASE + "/wheel/draw", {"draw_uuid": draw_uuid})
-                d2 = r2.json()
-                if d2.get("code") == 40900:
-                    log("  🏫 lottery 次数耗尽")
-                    break
-                if d2.get("code") != 0:
-                    log("  🏫 lottery draw 失败: %s" % str(d2.get("msg", ""))[:60])
-                    break
-                prize = (d2.get("data") or {}).get("prize_code", "")
-                credit = (d2.get("data") or {}).get("credit_amount", 0)
-                label = LOTTERY_PRIZE_LABELS.get(prize, prize or "未知")
-                results.append(label)
-                bal -= 1
-                log("  🏫 lottery → %s（余 %s）" % (label, bal))
-            except Exception as e:
-                log("  🏫 lottery draw 异常 %s" % str(e)[:60])
-                break
-        if results:
-            log("  🏫 lottery 汇总: %d 抽，奖品: %s" % (len(results), ", ".join(results)))
-    except Exception as e:
-        log("  🏫 lottery 异常 %s" % str(e)[:80])
 
 
 # ---------- 稳定指纹 & 事件构建（从 task_runner.py 移植） ----------
@@ -3174,6 +2929,8 @@ def run_account(idx, acc, do_desktop):
     summary["credits"] = credits
     summary["usage"] = usage
     summary["streak"] = streak.get("days", "?")
+    _ck = _checkin_status(s)          # 签到活动口径（与活跃连签分开显示，issue #21）
+    summary["checkin_streak"] = _ck.get("streak_days", "?")
     summary["signed"] = "✅" if "已签到" in (credits + "") or True else "❌"
     log("💰 积分: %s" % credits)
     log("📊 用量: %s" % usage)
@@ -3183,7 +2940,8 @@ def run_account(idx, acc, do_desktop):
         signed = sum(1 for c in cells if isinstance(c, dict) and c.get("score", 0) > 0)
     except Exception:
         signed = "?"
-    log("🌱 成长: 等级%s 连签%s天 能量%s 累签%s天" % (prof.get("level", "?"), streak.get("days", "?"), energy, signed))
+    log("🌱 成长: 等级%s 签到连签%s天 活跃连签%s天 能量%s 累签%s天"
+        % (prof.get("level", "?"), summary["checkin_streak"], streak.get("days", "?"), energy, signed))
     if QUERY_ONLY:
         return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
@@ -3251,7 +3009,6 @@ def run_account(idx, acc, do_desktop):
     _run("小程序GLM5.2", ["Sequential_Tasks_5"], lambda: t_sequential_tasks_5(s, uid, nick, log))
     _run("小程序对话10次", ["Sequential_Tasks_6"], lambda: t_sequential_tasks_6(s, uid, nick, log))
     _run("小程序灵感功能", ["Sequential_Tasks_7"], lambda: t_sequential_tasks_7(s, uid, nick, log))
-    _run("校园日活动", ["school_season", "school"], lambda: t_school_season(s, uid, nick, log))
     _run("徽章", ["badges"], lambda: t_badges(s, uid, nick, log))
     _run("抽奖", ["lottery"], lambda: t_lottery(s, uid, nick, log))
     _run("盲盒", ["blindbox"], lambda: t_blindbox(s, uid, nick, log))
@@ -3262,14 +3019,6 @@ def run_account(idx, acc, do_desktop):
     _run("补签", ["makeup"], lambda: t_makeup(s, uid, nick, log))
     _run("工作台搭建师", ["workstation_expert"], lambda: t_workstation(s, uid, nick, log, tok))
     t_unknown_tasks(s, uid, nick, log)   # 未覆盖任务检测不受过滤影响
-    # 开学季活动（可 --no-school 跳过）
-    if not NO_SCHOOL and want("school", "school_season"):
-        try:
-            school_s = _school_session(tok)
-            school_run_tasks(school_s, uid, nick, log)
-            school_lottery(school_s, uid, nick, log)
-        except Exception as e:
-            log("  🏫 开学季活动异常: %s" % str(e)[:80])
     # 领奖
     log("  🎁 ── 领奖 ──")
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
@@ -3324,7 +3073,10 @@ def build_summary(summaries):
         lines.append("👤 账号%d  %s" % (idx, mask_phone(note)))
         lines.append("   💰 %s" % (credits if credits else "暂无数据"))
         lines.append("   📊 %s" % (usage if usage else "暂无数据"))
-        lines.append("   🌱 等级%s | 连签%s天 | 能量%s" % (level, streak, energy))
+        lines.append("   🌱 等级%s | 签到连签%s天 | 活跃连签%s天 | 能量%s"
+                     % (level, sm.get("checkin_streak", "?"), streak, energy))
+        if str(streak).strip() in ("0", "0.0"):
+            lines.append("      ℹ️ 活跃连签=0 属正常：它由成长中心「使用事件（热力墙）」驱动，与积分签到无关")
         if rest_cn:
             lines.append("   ⏳ 未完成: %s" % "、".join(rest_cn))
         else:
@@ -3530,26 +3282,6 @@ def main():
         print("🖥️ 非Windows环境：桌面任务自动降级为指纹上报模式")
     all_msgs = []
     summaries = []
-    if SCHOOL_ONLY:
-        do_desktop = False
-        for i, acc in enumerate(ACCOUNTS):
-            tok = acc.get("access_token", "")
-            if not tok:
-                print("❌ 账号%d AT 为空，跳过" % (i + 1))
-                continue
-            uid = uid_of(tok); nick = nickname_of(tok)
-            s2 = _school_session(tok)
-            print("╭─ 👤 账号%d  %s [school-only]" % (i + 1, mask_phone(acc.get("note", ""))))
-            _tag = "账号%d" % (i + 1)
-            def _slog(m, _tag=_tag):
-                print("[%s][%s] %s" % (time.strftime("%H:%M:%S"), _tag, m))
-            try:
-                school_run_tasks(s2, uid, nick, _slog)
-                school_lottery(s2, uid, nick, _slog)
-            except Exception as e:
-                print("  ❌ 开学季异常: %s" % str(e)[:80])
-            time.sleep(WRITE_GAP)
-        return
     if QUERY_ONLY:
         with ThreadPoolExecutor(max_workers=min(6, len(ACCOUNTS))) as ex:
             futs = {ex.submit(run_account, i + 1, acc, False): i for i, acc in enumerate(ACCOUNTS)}
