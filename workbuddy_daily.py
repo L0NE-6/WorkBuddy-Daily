@@ -927,26 +927,53 @@ def _json_or_empty(r):
         return {}
 
 
+def _clean_num(v):
+    """把数值清理成简洁显示：整数去小数点；非整数最多 2 位小数，去掉尾 0。
+    （API 返回值可能是 str/float，且带浮点二进制噪声如 390.67000198 → 390.67）"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    r = round(f, 2)
+    if r == int(r):
+        return str(int(r))
+    return ("%.2f" % r).rstrip("0").rstrip(".")
+
+
+def mask_phone(s):
+    """手机号脱敏：隐藏中间 7 位，保留前 2 后 2（如 13800138000 → 13*******00）。
+    非 11 位数字原样返回（如账号名"账号1"、昵称等不受影响）。"""
+    s = str(s).strip()
+    if len(s) == 11 and s.isdigit():
+        return s[:2] + "*******" + s[-2:]
+    return s
+
+
 def queryCredits(s):
-    """积分查询：套餐总量/剩余/已用"""
+    """积分查询：剩余积分合计 + 各套餐明细（对齐客户端 App 顶部显示的剩余积分）。
+
+    App 顶部"剩余积分"= 所有套餐 CycleRemainCapacity 之和（如 2425.4 = 主套餐1925.4
+    + 加量包1 500 + 加量包2 0），脚本改为合计在前、明细在后，避免"看着不匹配"。
+    """
     try:
         # 瞬时错误（网络/5xx）有界重试：2s/4s 退避，业务错误不重试（上游 panel 同款口径）
         r = api_retry(s, "POST", BASE + "/billing/meter/get-user-resource-summary", body={},
                       retries=3, gap=2.0).json()
         pkgs = r.get("data", {}).get("Packages", [])
         paid = r.get("data", {}).get("IsPaidUser")
+        total_remain = 0.0
         out = []
         for i, p in enumerate(pkgs):
-            remain = p.get("CycleRemainCapacity", "0")
-            total = p.get("CycleTotalCapacity", "0")
-            used = p.get("CycleUsedCapacity", "0")
-            # 清理小数尾巴
-            remain = remain.rstrip("0").rstrip(".") if "." in remain else remain
-            used = used.rstrip("0").rstrip(".") if "." in used else used
-            total = total.rstrip("0").rstrip(".") if "." in total else total
+            remain_f = float(p.get("CycleRemainCapacity", 0) or 0)
+            total_f = float(p.get("CycleTotalCapacity", 0) or 0)
+            used_f = float(p.get("CycleUsedCapacity", 0) or 0)
+            total_remain += remain_f
             pkg_name = "主套餐" if i == 0 else "加量包%d" % i
-            out.append("%s剩余%s积分(共%s,已用%s)" % (pkg_name, remain, total, used))
-        return ("；".join(out) if out else "暂无套餐"), paid
+            out.append("%s剩余%s(共%s,已用%s)" % (pkg_name,
+                       _clean_num(remain_f), _clean_num(total_f), _clean_num(used_f)))
+        if not out:
+            return "暂无套餐", paid
+        return ("剩余积分合计%s（%s）" % (_clean_num(total_remain), "；".join(out))), paid
     except Exception as e:
         return "查询失败:" + str(e)[:40], False
 
@@ -3119,7 +3146,7 @@ def run_account(idx, acc, do_desktop):
     tok = acc.get("access_token", "")
     if not tok:
         log("")
-        log("╭─ 👤 账号%d  %s" % (idx, acc.get("note", "")))
+        log("╭─ 👤 账号%d  %s" % (idx, mask_phone(acc.get("note", ""))))
         log("  ❌ AT 为空（续期失败或凭据缺失），跳过此账号")
         return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0,
                       "rest": ["凭据缺失"], "level": "?", "energy": "?"}
@@ -3128,7 +3155,7 @@ def run_account(idx, acc, do_desktop):
     s = new_api(tok)
 
     log("")
-    log("╭─ 👤 账号%d  %s" % (idx, acc.get("note", "")))
+    log("╭─ 👤 账号%d  %s" % (idx, mask_phone(acc.get("note", ""))))
     # 查询
     credits, paid = queryCredits(s)
     usage = queryUsage(s)
@@ -3263,7 +3290,7 @@ def run_account(idx, acc, do_desktop):
                                        verify=False)).get("data") or {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,
                     "level": prof2.get("level", "?"), "energy": energy})
-    log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (acc.get("note", ""), done, len(st_all), prof2.get("level", "?"),
+    log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (mask_phone(acc.get("note", "")), done, len(st_all), prof2.get("level", "?"),
                                              ", ".join(rest) if rest else "无"))
     return msgs, summary
 
@@ -3294,7 +3321,7 @@ def build_summary(summaries):
         # 翻译任务代码为中文
         rest_cn = [task_cn(r) for r in rest]
 
-        lines.append("👤 账号%d  %s" % (idx, note))
+        lines.append("👤 账号%d  %s" % (idx, mask_phone(note)))
         lines.append("   💰 %s" % (credits if credits else "暂无数据"))
         lines.append("   📊 %s" % (usage if usage else "暂无数据"))
         lines.append("   🌱 等级%s | 连签%s天 | 能量%s" % (level, streak, energy))
@@ -3512,7 +3539,7 @@ def main():
                 continue
             uid = uid_of(tok); nick = nickname_of(tok)
             s2 = _school_session(tok)
-            print("╭─ 👤 账号%d  %s [school-only]" % (i + 1, acc.get("note", "")))
+            print("╭─ 👤 账号%d  %s [school-only]" % (i + 1, mask_phone(acc.get("note", ""))))
             _tag = "账号%d" % (i + 1)
             def _slog(m, _tag=_tag):
                 print("[%s][%s] %s" % (time.strftime("%H:%M:%S"), _tag, m))
