@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 33 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -20,7 +20,9 @@
 
 ## ✨ 这是什么
 
-一个脚本搞定 **WorkBuddy 成长中心 + 开学季活动 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项成长任务（17 全自动）→ 8 项互动玩法 → 5 项开学季任务 + 大转盘抽奖 → 8 项小程序任务 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+一个脚本搞定 **WorkBuddy 成长中心 + 小程序任务** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 17 项云端任务 → 7 项小程序链式任务 → 8 项互动玩法 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+>
+> 🗂️ **活动下线就归档**：已结束/已下架的任务（开学季活动、校园日、公益专家）不再占着主脚本，代码移到 [`archive/`](archive/) 留档，主脚本保持精简。
 
 > 🎯 一句话：**配一个刷新令牌，剩下交给它。**
 >
@@ -208,12 +210,10 @@ python workbuddy_login.py
 ## ⌨️ 命令行参数
 
 ```bash
-python workbuddy_daily.py                # 全流程：续期 → 查询 → 任务 → 开学季 → 领奖
+python workbuddy_daily.py                # 全流程：续期 → 查询 → 任务 → 领奖
 python workbuddy_daily.py --refresh      # 仅刷新所有账号 Token
 python workbuddy_daily.py --query        # 仅查询积分/用量/成长
 python workbuddy_daily.py --no-desktop   # 跳过桌面任务（非 Windows 默认走指纹上报，此参数可彻底跳过）
-python workbuddy_daily.py --no-school    # 跳过开学季活动
-python workbuddy_daily.py --school-only  # 只跑开学季活动（不做成长中心任务）
 python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，最低 1.0）
 python workbuddy_daily.py --tasks checkin,travel     # 只跑白名单子任务
@@ -247,11 +247,11 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 > WORKBUDDY_SKIP_TASKS=lottery,redeem
 > ```
 >
-> 代号：成长任务直接用 `task_code`（如 `chat_5`、`expert_5`、`black_cat`、`Sequential_Tasks_5`）；玩法/流程用别名 `checkin` `travel` `lottery` `redeem` `gift` `makeup` `badges` `blindbox` `buddy_info` `desktop` `school`。
+> 代号：成长任务直接用 `task_code`（如 `chat_5`、`expert_5`、`black_cat`、`Sequential_Tasks_5`）；玩法/流程用别名 `checkin` `travel` `lottery` `redeem` `gift` `makeup` `badges` `blindbox` `buddy_info` `desktop`。
 >
 > 被跳过的任务**不会执行、也不会被领奖**（在列表里保持未完成）；`first_buddy` 与 accept/领奖流程不受过滤影响。
 >
-> ⚠️ **别把「使用类」任务全关掉**：成长中心页面上那块「今日活跃 / 热力墙」是由**使用行为**（对话、文档、桌面等任务产生的事件）点亮的，**签到只给积分、不点热力墙**。若白名单里没有这类任务，页面会显示「开始使用以点亮今日热力墙」——那是活跃度、不是签到失败（签到状态看日志里的连签/累计即可）。
+> ⚠️ **别把「使用类」任务全关掉**：成长中心页面上那块「今日活跃 / 热力墙」是由**使用行为**（对话、文档、桌面等任务产生的事件）点亮的，**签到只给积分、不点热力墙**。若白名单里没有这类任务，页面会显示「开始使用以点亮今日热力墙」——那是活跃度、不是签到失败（签到状态看日志里的「签到连签 / 累计」即可）。
 >
 > 想两者兼得，保留**一个**使用类任务即可，例如：
 >
@@ -276,11 +276,13 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 
 ## 📦 任务清单
 
-> 总计 **40 项任务**（38 项全自动 + 2 项需人工），其中仅 1 项完全无法自动完成（公益捐款需真实转账）。
+> 单账号每轮按服务端下发逐项核对：**当前为 19 项 = 18 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **33 项**（云端 17 + 小程序 7 + 互动玩法 8 + 每日签到 1）。
 >
-> 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注，脚本会检测并提示，不自动完成。
+> 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注满 24 小时，脚本会检测并提示，不自动完成。
+>
+> 📦 **已归档**（活动结束 / 服务端已下架，代码移出主脚本 → [`archive/`](archive/)）：开学季活动（4 项 + 幸运大转盘）、校园日 `school_season`、公益专家 `Expert_Philanthropy`。
 
-### ☁️ 成长中心任务（18 项 · 17 项全自动）
+### ☁️ 成长中心任务（17 项云端 · 全自动）
 
 | # | 任务 | 说明 |
 | :-: | :--- | :--- |
@@ -301,31 +303,24 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | 15 | 使用5个模板 | 服务端真实场景 id（`/console/as/support/scenes`）+ 事件组上报 |
 | 16 | 设置自动化任务 | 真实 rrule 定时对象形状 + automation 事件上报 |
 | 17 | 领取Buddy | 领养链路（+300c+8e） |
-| 18 | ~~公益专家~~ | ❌ **需真实捐款，脚本不做** |
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
 
-> 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余 17 项任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
+> 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余云端任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
 >
 > ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；**未完成且 7 天内到期 / 已过期**的任务打印 ⏰ 提醒，避免白白错过奖励。
 
-### 🏫 开学季活动（5 项 · 4 项全自动 + 幸运大转盘）
+### 📦 已归档（不占主脚本）
 
-| # | 任务 | 说明 |
-| :-: | :--- | :--- |
-| 1 | 分享活动给好友 | `share-complete` 点亮 |
-| 2 | 与 AI 对话 3 次 | 小程序域事件上报 |
-| 3 | 桌面端对话 1 次 | 桌面 6 连事件（copilot 域） |
-| 4 | 召唤开学季专家 | BackToSchool 专家事件 |
-| 5 | ~~学生认证~~ | ❌ 微信实名认证，人工环节 |
+| 归档项 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| 🏫 开学季活动（4 项 + 幸运大转盘） | 活动已结束 | 2026 开学季 9 月下旬收尾，服务端 `in_period=false`；当时 4 项可自动任务均已到账（`claimed`），学生认证为人工项 |
+| 📱 校园日 `school_season` | 任务已下架 | mp 任务列表不再下发（+100 积分 +5 能量，奖励当时已入账） |
+| 🤝 公益专家 `Expert_Philanthropy` | 服务端已下架 | 本就需要真实捐款，脚本从不下发 |
 
-> 📅 **活动期自适应**：脚本以服务端 `in_period` 判定活动是否进行中，结束后自动跳过（日志提示「开学季活动非进行期」），不会误报成失败。**2026 开学季活动已于 9 月下旬结束** —— 4 项可自动任务均已到账（`claimed`），学生认证为人工项；`school_season` 校园日已从 mp 任务列表撤下。
+> 代码原文移入 [`archive/school_season_2026.py`](archive/school_season_2026.py)（只作留档，不参与日常运行）。若官方重开同类活动，把归档实现按新接口核对后搬回主脚本即可。
 
-> 🔗 **专家任务**：召唤 4 事件链（点击 → 召唤 → 使用 → 对话），与官方小程序埋点同构。
->
-> 🎰 **幸运大转盘**：查余额 → 循环抽奖到 0
-> 奖品：6 积分 / 66 积分 / 瑞幸 15 元券 / KFC OK 餐券 / KFC 冰淇淋券 / 酷狗会员月卡
 
-### 📱 小程序成长任务（8 项 · 全自动 · 链式每日解锁）
+### 📱 小程序成长任务（7 项 · 全自动 · 链式每日解锁）
 
 | # | 任务 | 奖励 | 判定依据 |
 | :-: | :--- | :--- | :--- |
@@ -336,15 +331,14 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 | 5 | `Sequential_Tasks_5` 使用 1 次 GLM5.2 | +100 积分 +5 能量 | mini chat + 模型字段 |
 | 6 | `Sequential_Tasks_6` 完成 10 次对话 | +100 积分 +5 能量 | 同 Tasks_1/3 形状，target=10 |
 | 7 | `Sequential_Tasks_7` 体验灵感功能 | **+500 积分** +5 能量 | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
-| 8 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId`（开学季已结束，任务已从列表撤下，奖励此前已到账） |
 
 > 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环。脚本支持两种判据：任务行 `locked=true`（未到上线时间）→ 直接跳过并打印解锁日；错过时才靠 accept 返回的 `task locked until <日期>` 兜底。两种情况都不会被当成失败。
 >
-> ⏱️ **真人节奏**：`chat_request_send` 类对话判据有**反作弊校验**——数秒级连发会先计入进度、随后被整体回滚（claim 返回 400 `task not completed`）。所以脚本对 Tasks_1/3/5/6、校园日按 **45s±10s 逐条上报**（上游实测 45s 间隔全存活），可用 `--mp-gap` / `WORKBUDDY_MP_GAP` 调整；副作用是「一次要补很多条」时整轮会变慢（工作流超时已放宽到 45 分钟）。
+> ⏱️ **真人节奏**：`chat_request_send` 类对话判据有**反作弊校验**——数秒级连发会先计入进度、随后被整体回滚（claim 返回 400 `task not completed`）。所以脚本对 Tasks_1/3/5/6 按 **45s±10s 逐条上报**（上游实测 45s 间隔全存活），可用 `--mp-gap` / `WORKBUDDY_MP_GAP` 调整；副作用是「一次要补很多条」时整轮会变慢（工作流超时已放宽到 45 分钟）。
 >
-> ✅ 已到账：**Tasks_1~7 全部 claimed**（链式机制逐日自动推进），校园日奖励也已在活动期内入账
+> ✅ 已到账：**Tasks_1~7 全部 claimed**（链式机制逐日自动推进）
 
-> 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
+> 💡 小程序口径任务需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
 
 ### 🎮 互动玩法（8 项）
@@ -361,14 +355,16 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 
 | 分类 | 总数 | 全自动 | 人工/不可做 |
 | :--- | :-: | :-: | :-: |
-| 成长中心任务 | 18 | 17 | 1（公益专家，需捐款） |
-| 开学季活动 | 5 | 4 | 1（学生认证，需实名） |
-| 小程序任务 | 8 | 8 | 0 |
+| 成长中心任务（云端） | 17 | 17 | 0 |
+| 小程序任务 | 7 | 7 | 0 |
 | 互动玩法 | 8 | 8 | 0 |
 | 每日签到 | 1 | 1 | 0 |
-| **合计** | **40** | **38** | **2** |
+| 📦 已归档 | 3 类 | — | 开学季活动（含大转盘）· 校园日 `school_season` · 公益专家 `Expert_Philanthropy` |
+| **合计** | **33** | **33** | **0** |
 
 > ℹ️ 成长中心任务会随活动更新。脚本内置**未覆盖任务检测**：遇到没适配的新任务会在日志中明确提示。
+>
+> 📌 另有 1 项需人工：微信公众号关注（`wb_wechat_oa_subscribe_task`，脚本检测并提示，不自动完成）。
 
 ---
 
@@ -388,10 +384,11 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 - **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「17 项未落账」。
 - **🎯 真实会话 id**：专家/技能类任务的 `requestId` / `messageId` 取自真实对话的服务端消息 id（`cmb-` 形态），并对齐 `has_expert` / `mode: LOCAL` 口径——上游 panel 三账号实测点亮 `Expert_lighthouse`。
 - **🎁 领奖口径对齐**：连登奖励按服务端 `redemption_status` 判定档位（已领不重发请求），实物奖自动提示填写收货地址。
-- **📈 签到读数 + 到期预警**：签到后读签到活动状态，报告给出**连签天数 / 累计积分 / 距下一次连签奖励的天数**；距活动 `end_time` ≤7 天或活动已关闭时给出 ⚠️ 提示（避免“活动结束才发现收入断档”）。
+- **📈 签到读数 + 到期预警**：签到后读签到活动状态，报告给出**签到连签天数 / 累计积分 / 距下一次连签奖励的天数**；距活动 `end_time` ≤7 天或活动已关闭时给出 ⚠️ 提示（避免“活动结束才发现收入断档”）。
+- **🧭 两种连签分开显示**：日志/推送统一写成「签到连签N天 | 活跃连签N天」——前者是积分签到活动（`checkin-activity-status.streak_days`），后者是成长中心热力墙（`growth/streak`，由使用事件驱动；成长任务全部领完后常为 0，属正常不属故障）。
 - **🧭 生态口径对齐**：画布 / 灵感走真实对话 + 桌面链，主题目录动态取真 `resource_key`，自动化任务用真实 rrule 对象；抽奖（`lottery/summary`）与兑换（`redeem/summary`）均带备用接口口径。
 - **🛡️ 单账号隔离 + 凭据体检**：续期前先本地体检 RT/AT（`typ=Offline`、签发域 `codebuddy.cn`、三段式），把 `token format error` 翻译成「粘反了 / 粘错文件 / 被截断」；任一账号凭据失效或中途异常只跳过该账号，**不会中断整轮运行**。
-- **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
+- **📦 活动下线就归档**：已结束/已下架的限时任务（开学季、校园日）不再常驻主脚本，代码移入 [`archive/`](archive/) 留档，主脚本只保留在跑的任务。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
 - **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族；指纹按**官方小程序源码**口径（`ideVersion/extVersion=2.2.8`、`android 14 / arm64`、`source=mini_program`），对话事件的 `conversationId` / `requestId` / `traceId` 同值传递。
@@ -437,17 +434,18 @@ python workbuddy_daily.py --mp-gap 15    # mp 对话事件间隔（默认 45s，
 👤 账号1  账号1
    💰 主套餐剩余980积分(共1000,已用20)
    📊 共12类资源，本月已使用3456次
-   🌱 等级3 | 连签7天 | 能量120
+   🌱 等级3 | 签到连签7天 | 活跃连签7天 | 能量120
    ⏳ 未完成: 桌面端对话、尝鲜热门技能
 
 👤 账号2  账号2
    💰 主套餐剩余500积分(共1000,已用500)
    📊 共12类资源，本月已使用1200次
-   🌱 等级5 | 连签30天 | 能量300
+   🌱 等级5 | 签到连签30天 | 活跃连签0天 | 能量300
+      ℹ️ 活跃连签=0 属正常：它由成长中心「使用事件（热力墙）」驱动，与积分签到无关
    ✅ 全部完成！
 
 📊 ══ 总计 ══
-👥 共2个账号，任务完成 36/38 项
+👥 共2个账号，任务完成 33/34 项
 
    · 桌面端对话（1个账号待完成）
    · 尝鲜热门技能（1个账号待完成）
@@ -469,6 +467,7 @@ WorkBuddy-Daily/
 ├── requirements.txt         # 依赖（仅 requests）
 ├── .gitignore               # 屏蔽凭据/运行数据
 ├── assets/                  # 资源（打赏收款码）
+├── archive/                 # 已归档：活动结束/服务端已下架的限时任务（如开学季）
 ├── LICENSE                  # MIT 许可证
 └── README.md
 ```
@@ -478,7 +477,7 @@ WorkBuddy-Daily/
 ## 📦 版本与发布
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
-- Release 标题括号里是**脚本自身的版本号**（如 `v1（脚本 v3.3）`），与文件头、日志里的版本一致
+- Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
 - 每个 Release 都带三个资产（完整包 zip / 主脚本 `workbuddy_daily.py` / 登录工具 `workbuddy_login.py`）+ **SHA256 校验值**
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
 
