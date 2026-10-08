@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.4
+🌱 WorkBuddy Daily - 全能签到脚本 v3.5
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -60,6 +60,10 @@
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
    DINGTALK_WEBHOOK          【可选】钉钉群机器人 webhook（安全设置：自定义关键词或加签）
    DINGTALK_SECRET           【可选】钉钉加签密钥（机器人选「加签」时必填）
+   QL_CLIENT_ID/SECRET       【可选】青龙默认通知（2.18+ 必填这组）：面板「应用授权」
+                             新建应用并勾选 system 权限，把 client_id / client_secret 填进来
+   QL_URL / QL_DIR / QL_TOKEN
+                             【可选】面板地址 / 数据目录 / 旧版面板 token（默认自动探测）
    WORKBUDDY_MP_GAP          【可选】mp 对话事件间隔秒数（默认 45，可调小提速）
 
 获取变量值（首次必看）
@@ -139,6 +143,8 @@
      把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 推送渠道：PushPlus / Bark / 企业微信 / 钉钉 / 青龙默认通知，配了哪个推哪个（都没配只提示）
+     青龙通知同时兼容新版「应用授权」（QL_CLIENT_ID/QL_CLIENT_SECRET→/open/system/notify）
+     与旧版 auth.json（含 2.18+ 的 data/config 数据目录）两种形态
    · 完全免费：无广告、无功能限制；如帮到你，欢迎在仓库 README「☕ 支持与投喂」请我喝杯咖啡
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -3207,26 +3213,77 @@ def _dingtalk_notify(title, content):
     return False
 
 
+def _ql_base():
+    """青龙面板地址：QL_URL / QL_BASE_URL 显式指定，默认本机 5700。"""
+    return (os.environ.get("QL_URL", "").strip() or os.environ.get("QL_BASE_URL", "").strip()
+            or "http://127.0.0.1:5700").rstrip("/")
+
+
+def _ql_open_token():
+    """新版青龙（2.18+ 不再写 auth.json）：用「应用授权」的 client_id/secret 换令牌。
+
+    面板 → 应用授权 → 新建应用（勾选 system 权限）→ 拿 client_id / client_secret，
+    存两个环境变量 QL_CLIENT_ID / QL_CLIENT_SECRET 即可（青龙里直接建同名变量）。
+    令牌 30 天有效，这里每次运行现换一个新的，不存在过期问题。
+    """
+    cid = os.environ.get("QL_CLIENT_ID", "").strip()
+    sec = os.environ.get("QL_CLIENT_SECRET", "").strip()
+    if not (cid and sec):
+        return ""
+    try:
+        s = requests.Session(); s.trust_env = False
+        r = s.get(_ql_base() + "/open/auth/token",
+                  params={"client_id": cid, "client_secret": sec}, timeout=15, verify=False)
+        return ((r.json() or {}).get("data") or {}).get("token", "")
+    except Exception:
+        return ""
+
+
 def _ql_notify(title, content):
     """青龙面板自带的默认通知渠道（面板里配好的那种）。
 
-    不依赖额外插件：读 QL_DIR/config/auth.json 里的 token，调面板通知接口。
-    青龙各版本路由不同（/api/system/notify 与 /api/system/message 都出现过），
-    逐个试；鉴权先试 Authorization 头、再试 ?token= 查询参数。全程失败只打一行提示。
-    可用 QL_DIR / QL_URL / QL_TOKEN 显式指定（默认 /ql 与 http://127.0.0.1:5700）。
+    两种鉴权都支持，自动选：
+      ① 新版：应用授权 QL_CLIENT_ID / QL_CLIENT_SECRET（青龙 2.18+ 不再写 auth.json）
+         → GET /open/auth/token 换令牌 → PUT /open/system/notify（应用需勾选 system 权限）
+      ② 旧版：QL_TOKEN 变量，或读 $QL_DIR/config/auth.json（2.18 前）与
+         $QL_DIR/data/config/auth.json（2.18+ 数据目录）里的面板 token → /api/system/notify
+
+    旧版路由各版本不一（/api/system/notify 与 /api/system/message 都出现过），逐个试；
+    鉴权先试 Authorization 头、再试 ?token= 查询参数。全程失败只打一行提示。
+    可用 QL_DIR / QL_URL / QL_TOKEN / QL_CLIENT_ID / QL_CLIENT_SECRET 显式指定。
     """
+    payload = {"title": title, "content": content}
+    base = _ql_base()
+    # ① 新版：应用授权（client_id / client_secret）
+    open_tok = _ql_open_token()
+    if open_tok:
+        try:
+            s = requests.Session(); s.trust_env = False
+            r = s.put(base + "/open/system/notify", json=payload,
+                      headers={"Authorization": "Bearer " + open_tok}, timeout=20, verify=False)
+            d = r.json() if r.content else {}
+            if r.status_code == 200 and str(d.get("code")) in ("200", "0"):
+                print("📢 青龙通知推送成功（应用授权）")
+                return True
+            print("📢 青龙通知（应用授权）失败：HTTP %s %s（检查应用是否勾选 system 权限）"
+                  % (r.status_code, str(d.get("message") or d.get("msg") or "")[:80]))
+        except Exception as e:
+            print("📢 青龙通知（应用授权）异常: %s" % str(e)[:80])
+    # ② 旧版：QL_TOKEN，或 auth.json（兼容 2.18 前后的两种数据目录）
     ql_dir = os.environ.get("QL_DIR", "").strip() or "/ql"
-    base = (os.environ.get("QL_URL", "").strip() or "http://127.0.0.1:5700").rstrip("/")
     token = os.environ.get("QL_TOKEN", "").strip()
     if not token:
-        try:
-            token = json.load(open(os.path.join(ql_dir, "config", "auth.json"),
-                                 encoding="utf-8")).get("token", "")
-        except Exception:
-            token = ""
+        for rel in (os.path.join("config", "auth.json"),
+                    os.path.join("data", "config", "auth.json")):
+            try:
+                token = json.load(open(os.path.join(ql_dir, rel),
+                                         encoding="utf-8")).get("token", "")
+                if token:
+                    break
+            except Exception:
+                token = ""
     if not token:
-        return False          # 非青龙环境（或未登过面板）：静默跳过，不算失败
-    payload = {"title": title, "content": content}
+        return False          # 非青龙环境（或未配置授权）：静默跳过，不算失败
     for path in ("/api/system/notify", "/api/system/message"):
         for use_query in (False, True):
             try:
@@ -3240,7 +3297,8 @@ def _ql_notify(title, content):
                     return True
             except Exception:
                 continue
-    print("📢 青龙通知推送失败（面板可能未配置通知渠道或路由不同，可用 QL_TOKEN/QL_URL 显式指定）")
+    print("📢 青龙通知推送失败（面板可能未配置通知渠道或路由不同；新版面板请到「应用授权」建应用，"
+          "配 QL_CLIENT_ID + QL_CLIENT_SECRET（需勾选 system 权限）；旧版可配 QL_TOKEN / QL_URL）")
     return False
 
 
@@ -3255,7 +3313,8 @@ def send_notify_all(title, content):
                _dingtalk_notify(title, content),   # 钉钉
                _ql_notify(title, content)]         # 青龙面板默认通知
     if not any(results):
-        print("ℹ️ 未配置推送渠道（PUSHPLUS_TOKEN / BARK_URL / WECOM_WEBHOOK / DINGTALK_WEBHOOK 任选其一）")
+        print("ℹ️ 未配置推送渠道（PUSHPLUS_TOKEN / BARK_URL / WECOM_WEBHOOK / DINGTALK_WEBHOOK / "
+              "青龙应用授权 QL_CLIENT_ID+QL_CLIENT_SECRET 任选其一）")
     return any(results)
 
 
