@@ -2,7 +2,7 @@
 
 # 🌱 WorkBuddy Daily
 
-**WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
+**WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃）**
 
 🔐 Token 永续 · ✅ 33 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
@@ -33,6 +33,31 @@
 > ⬇️ **不想用 git？** 直接到 **[Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)** 下载：完整包 zip（主脚本 + 登录工具 + README + Actions 工作流）、单文件 `workbuddy_daily.py`、登录工具 `workbuddy_login.py`——每个包都附 SHA256 校验值。
 
 ---
+
+
+## 🌍 国际版每日活跃（workbuddy.ai）
+
+国际版的每日奖励不是普通签到，而是一条**活跃任务**链，单独一个脚本：
+
+1. 探测活动是否开放、今天是否已领（`/billing/meter/checkin-activity-status`）；
+2. 开放且未领时领取每日奖励（`/v2/billing/meter/daily-checkin`）；
+3. 发一次最小流式对话完成**活跃保活**（免费模型，不消耗积分）。
+
+```bash
+python workbuddy_intl_daily.py                      # 探测 + 领取 + 保活
+python workbuddy_intl_daily.py --no-keepalive       # 只探测与领取
+python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
+```
+
+| 环境变量 | 说明 |
+| :--- | :--- |
+| `WORKBUDDY_INTL_TOKENS` | 多账号，换行或 `&` 分隔；每条 `token` / `备注\|token` / `备注\|token\|uid` / `备注\|token\|uid\|refresh_token` |
+| `WORKBUDDY_TOKEN` | 单账号兜底（国际版登录态） |
+| `WORKBUDDY_INTL_MODELS` | 可选，保活模型链，逗号分隔；默认官方免费的四个 |
+
+> ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
+> 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
+> 活动未开放属于正常状态，不会当成失败；保活成功与领取成功分开报告。
 
 ## 🚀 部署方式一：青龙面板（三步）
 
