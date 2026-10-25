@@ -74,6 +74,9 @@
    WORKBUDDY_MAKEUP_MAX_PER_RUN
                              【可选】每轮最多补签几张（默认 1，最多 10）
    WORKBUDDY_BENEFIT_STATE   【可选】补偿/礼包本地期次防重文件路径
+   WORKBUDDY_STATE_DIR       【可选】状态文件目录（令牌库 / AT 文本 / 补偿防重）
+                             不设＝脚本同级目录（默认）；容器或脚本目录会被
+                             重装/升级覆盖时建议指向持久目录
    WORKBUDDY_ACTIVITY_CHAT_FALLBACK
                              【可选】热力图未计分时是否补一次真实对话（默认 1）
 
@@ -480,10 +483,27 @@ INFO_BACKUP = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBud
 # ---------- 账号 ----------
 # ---------- Token 自动续期（内联实现，无需外部文件） ----------
 REFRESH_URL = "https://copilot.tencent.com/v2/plugin/auth/token/refresh"
-REFRESH_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wb_refresh_tokens.json")
-TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WORKBUDDY_ACCESS_TOKEN.txt")
-BENEFIT_STATE_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "workbuddy_benefit_state.json")
+def _state_dir():
+    """状态文件目录：`WORKBUDDY_STATE_DIR` 优先，未设置时用脚本同级目录（原行为）。
+
+    默认行为保持不变；需要把状态放进数据卷/持久目录时（容器、只读的脚本目录、
+    面板类调度器升级会覆盖脚本目录）设这个变量，避免轮换后的令牌库随脚本一起
+    被替换掉、下次运行又只能从环境变量里那份更旧的 RT 重新自举。
+    """
+    custom = os.environ.get("WORKBUDDY_STATE_DIR", "").strip()
+    if custom:
+        try:
+            os.makedirs(custom, exist_ok=True)
+        except Exception:
+            pass
+        return custom
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+STATE_DIR = _state_dir()
+REFRESH_STORE = os.path.join(STATE_DIR, "wb_refresh_tokens.json")
+TOKEN_FILE = os.path.join(STATE_DIR, "WORKBUDDY_ACCESS_TOKEN.txt")
+BENEFIT_STATE_FILE = os.path.join(STATE_DIR, "workbuddy_benefit_state.json")
 
 
 
@@ -1532,7 +1552,7 @@ def t_daily_activity(s, uid, nick, log):
     只认 `/v2/report` 的 `chat_request_send`。每天补发一条，幂等。
     """
     state_file = os.getenv("WORKBUDDY_ACTIVITY_STATE", "").strip() or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "workbuddy_activity_state.json")
+        STATE_DIR, "workbuddy_activity_state.json")
     today = beijing_today().isoformat()
     state = {}
     try:

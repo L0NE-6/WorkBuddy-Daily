@@ -1144,6 +1144,52 @@ class CoreBehaviorTests(unittest.TestCase):
         )
         self.assertEqual("标题 第二行", posted["data"]["title"])
 
+    def test_state_dir_env_overrides_default_locations(self):
+        """WORKBUDDY_STATE_DIR 决定令牌库/AT文本/补偿防重的落点；不设则回退脚本目录。"""
+        # _state_dir() 依赖模块的 __file__，这里用完整模块命名空间执行，
+        # 不能用 load_functions 只抽函数体（那样 __file__ 不存在）。
+        namespace = {"__builtins__": __builtins__, "__file__": str(SOURCE_PATH),
+                     "__name__": "wb_state_dir_probe", "os": os}
+        module_node = ast.Module(body=[FUNCTIONS["_state_dir"]], type_ignores=[])
+        exec(compile(module_node, str(SOURCE_PATH), "exec"), namespace)
+        state_dir = namespace["_state_dir"]
+
+        previous = os.environ.pop("WORKBUDDY_STATE_DIR", None)
+        try:
+            default_dir = state_dir()
+            self.assertEqual(str(SOURCE_PATH.parent), default_dir)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                custom = os.path.join(temp_dir, "state")
+                os.environ["WORKBUDDY_STATE_DIR"] = custom
+                self.assertEqual(custom, state_dir())
+                # 目录不存在时应自动创建，否则写入阶段会失败
+                self.assertTrue(os.path.isdir(custom))
+
+                # 空白值视同未设置，不能变成空目录名
+                os.environ["WORKBUDDY_STATE_DIR"] = "   "
+                self.assertEqual(str(SOURCE_PATH.parent), state_dir())
+        finally:
+            os.environ.pop("WORKBUDDY_STATE_DIR", None)
+            if previous is not None:
+                os.environ["WORKBUDDY_STATE_DIR"] = previous
+
+    def test_state_files_follow_state_dir(self):
+        """三个状态常量必须都跟着 WORKBUDDY_STATE_DIR 走，不能漏一个。"""
+        for name in ("REFRESH_STORE", "TOKEN_FILE", "BENEFIT_STATE_FILE"):
+            for node in TREE.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not any(isinstance(t, ast.Name) and t.id == name
+                           for t in node.targets):
+                    continue
+                source = ast.get_source_segment(SOURCE, node.value) or ""
+                self.assertIn("STATE_DIR", source,
+                              "%s 未使用 STATE_DIR：%s" % (name, source))
+                break
+            else:
+                self.fail("未找到状态常量 %s" % name)
+
 
 if __name__ == "__main__":
     unittest.main()

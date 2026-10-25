@@ -119,6 +119,7 @@ pip3 install requests
 | `WORKBUDDY_ACTIVITY_STATE` | ⬜ | 可选，每日活跃上报的本地去重文件路径 |
 | `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，合成活跃事件未点亮热力图时是否补一次真实对话（默认 `1`） |
 | `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径 |
+| `WORKBUDDY_STATE_DIR` | ⬜ | 可选，状态文件目录（`wb_refresh_tokens.json` / `WORKBUDDY_ACCESS_TOKEN.txt` / 补偿防重等）。不设＝脚本同级目录（原行为）；容器部署、脚本目录只读，或升级会覆盖脚本目录时，指向持久目录可避免轮换后的令牌库被一并替换 |
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
@@ -313,6 +314,7 @@ python daily_forward.py daily.log --wx
 | `WORKBUDDY_ACTIVITY_STATE` | ⬜ | 可选，每日活跃上报的本地去重文件路径（默认 `workbuddy_activity_state.json`） |
 | `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，热力图仍为 0 时是否补一次真实对话（默认开启） |
 | `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径（默认 `workbuddy_benefit_state.json`） |
+| `WORKBUDDY_STATE_DIR` | ⬜ | 可选，状态文件目录（令牌库 `wb_refresh_tokens.json`、`WORKBUDDY_ACCESS_TOKEN.txt`、补偿防重等的默认落点）。不设＝脚本同级目录（原行为）；容器部署、脚本目录只读，或升级会覆盖脚本目录时，指向持久目录可避免轮换后的令牌库被一并替换 |
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 🎛️ **子任务开关怎么用？** 任务完成后领到的积分有**一个月有效期**，一次全领完容易放过期。
