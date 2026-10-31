@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.34
+🌱 WorkBuddy Daily - 全能签到脚本 v3.35
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -1534,7 +1534,7 @@ def mask_phone(s):
     return s
 
 
-def queryCredits(s):
+def queryCredits(s, meta=None):
     """积分查询：剩余积分合计 + 各套餐明细（对齐客户端 App 顶部显示的剩余积分）。
 
     App 顶部"剩余积分"= 所有套餐 CycleRemainCapacity 之和（如 2425.4 = 主套餐1925.4
@@ -1556,6 +1556,8 @@ def queryCredits(s):
             pkg_name = "主套餐" if i == 0 else "加量包%d" % i
             out.append("%s剩余%s(共%s,已用%s)" % (pkg_name,
                        _clean_num(remain_f), _clean_num(total_f), _clean_num(used_f)))
+        if meta is not None:
+            meta["total_remain"] = total_remain
         if not out:
             return "暂无套餐", paid
         return ("剩余积分合计%s（%s）" % (_clean_num(total_remain), "；".join(out))), paid
@@ -4465,7 +4467,8 @@ def run_account(idx, acc, do_desktop):
         return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0,
                       "rest": ["凭据失效"], "level": "?", "energy": "?"}
     # 查询
-    credits, paid = queryCredits(s)
+    credit_meta = {}
+    credits, paid = queryCredits(s, credit_meta)
     usage = queryUsage(s)
     prof = pj.get("data", {}) or {}
     energy = (_json_or_empty(s.get(BASE + "/v2/activity/growth/energy", timeout=25,
@@ -4473,6 +4476,7 @@ def run_account(idx, acc, do_desktop):
     streak = ((_json_or_empty(s.get(BASE + "/v2/activity/growth/streak", timeout=25,
                                              verify=False)).get("data") or {}).get("streak") or {})
     summary["credits"] = credits
+    summary["credits_before"] = credit_meta.get("total_remain")
     summary["usage"] = usage
     summary["streak"] = streak.get("days", "?")
     _ck = _checkin_status(s)          # 签到活动口径（与活跃连签分开显示，issue #21）
@@ -4603,6 +4607,14 @@ def run_account(idx, acc, do_desktop):
     # 领奖：按进度补领，不依赖 accept_status 的瞬时状态
     log("  🎁 ── 领奖 ──")
     claim_ready_tasks(s, log)
+    # issue #44：推送里给出本轮操作前/后的积分与差值
+    credit_after = {}
+    queryCredits(s, credit_after)
+    summary["credits_after"] = credit_after.get("total_remain")
+    before = summary.get("credits_before")
+    after = summary.get("credits_after")
+    if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+        summary["credits_delta"] = float(after) - float(before)
     # 终态
     st_all = (_json_or_empty(s.get(BASE + "/v2/activity/growth/tasks", timeout=25,
                                       verify=False)).get("data") or {}).get("tasks", [])
@@ -4646,7 +4658,15 @@ def build_summary(summaries):
         rest_cn = [task_cn(r) for r in rest]
 
         lines.append("👤 账号%d  %s" % (idx, mask_phone(note)))
-        lines.append("   💰 %s" % (credits if credits else "暂无数据"))
+        before = sm.get("credits_before")
+        after = sm.get("credits_after")
+        if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+            delta = float(after) - float(before)
+            sign = "+" if delta > 0 else ""
+            lines.append("   💰 积分: %s → %s（本轮 %s%s）" % (
+                _clean_num(before), _clean_num(after), sign, _clean_num(delta)))
+        else:
+            lines.append("   💰 %s" % (credits if credits else "暂无数据"))
         lines.append("   📊 %s" % (usage if usage else "暂无数据"))
         lines.append("   🌱 等级%s | 签到连签%s天 | 活跃连签%s天 | 能量%s"
                      % (level, sm.get("checkin_streak", "?"), streak, energy))

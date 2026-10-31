@@ -1905,6 +1905,19 @@ class TaskDispatchGuardTests(unittest.TestCase):
         self.assertEqual([], sequences)
         self.assertEqual([], reports)
 
+    def test_build_summary_shows_credit_before_after_and_delta(self):
+        module = load_functions(
+            "build_summary", "task_cn", "mask_phone", "_clean_num",
+            TASK_NAME_CN={}, time=time,
+        )
+        text = module["build_summary"]([{
+            "idx": 1, "note": "13800138000", "credits": "旧文案",
+            "credits_before": 100, "credits_after": 150,
+            "usage": "75类资源", "level": 17, "checkin_streak": 31,
+            "streak": 30, "energy": 15, "done": 1, "total": 2, "rest": [],
+        }])
+        self.assertIn("积分: 100 → 150（本轮 +50）", text)
+
 
 if __name__ == "__main__":
     unittest.main()

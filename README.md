@@ -168,6 +168,17 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 
 - 若继续使用**公开仓库**（含公开 Fork），令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期（RT 一般 30 天滚动，建议每月更新一次）。
 
+### ⏰ 私有仓库 / Import 后定时不触发（issue #43）
+
+手动 `Run workflow` 成功、但 `schedule` 不跑，按这个顺序排查：
+
+1. **默认分支**：GitHub 的 `schedule` 只在仓库默认分支上生效。Import 后如果默认分支还是 `master`，而 workflow 只在 `main`，定时永远不会触发。
+2. **Actions 开关**：`Settings → Actions → General` 确认允许 Actions；`Actions` 页选中 `🌱 WorkBuddy Daily`，若提示 disabled 点 **Enable workflow**。
+3. **Fork 限制**：Fork 仓库默认禁用定时 workflow，必须在 Actions 页手动启用；私有仓库建议用 Import/手动上传，不要用 Fork。
+4. **60 天无活动**：GitHub 会自动停用长期无活动仓库的 `schedule`；手动运行一次或 push 一个 commit 可重新激活。
+5. **cron 是 UTC**：北京时间要减 8 小时，例如 `0 23 * * *` 是北京时间次日 07:00。
+6. **看 Actions 记录**：如果只有 `workflow_dispatch` 记录、没有 `schedule` 记录，基本就是上面 1/2/3/4 之一，不是脚本问题。
+
 ---
 
 ## 🔐 登录工具：短信验证码获取 Token
@@ -617,7 +628,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ## 📦 版本与发布
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
-- **当前脚本版本**：`v3.34`（Release `v34`）
+- **当前脚本版本**：`v3.35`（Release `v35`）
 - Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
 - 每个 Release 都带完整包 zip、各脚本单文件与 `SHA256SUMS.txt` 校验文件，按需下载即可
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
