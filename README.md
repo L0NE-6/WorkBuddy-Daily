@@ -140,9 +140,9 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 ### 内置定时（北京时间）
 | 时间 | UTC cron | 说明 |
 | :---: | :---: | :--- |
-| 07:00 | `0 23 * * *` | 日常全流程 |
-| 12:00 | `0 4 * * *` | 日常全流程 |
-| 23:30 | `30 15 * * *` | 夜猫子活动窗口 |
+| 07:17 | `17 23 * * *` | 日常全流程，避开整点高峰 |
+| 12:17 | `17 4 * * *` | 日常全流程，避开整点高峰 |
+| 23:37 | `37 15 * * *` | 夜猫子活动窗口 |
 
 > 需要改时间，编辑 `workbuddy.yml` 里的 `cron`（**注意是 UTC，北京时间 − 8 小时**）。
 >
@@ -176,8 +176,9 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 2. **Actions 开关**：`Settings → Actions → General` 确认允许 Actions；`Actions` 页选中 `🌱 WorkBuddy Daily`，若提示 disabled 点 **Enable workflow**。
 3. **Fork 限制**：Fork 仓库默认禁用定时 workflow，必须在 Actions 页手动启用；私有仓库建议用 Import/手动上传，不要用 Fork。
 4. **60 天无活动**：GitHub 会自动停用长期无活动仓库的 `schedule`；手动运行一次或 push 一个 commit 可重新激活。
-5. **cron 是 UTC**：北京时间要减 8 小时，例如 `0 23 * * *` 是北京时间次日 07:00。
+5. **cron 是 UTC**：北京时间要减 8 小时，例如 `17 23 * * *` 是北京时间次日 07:17。
 6. **看 Actions 记录**：如果只有 `workflow_dispatch` 记录、没有 `schedule` 记录，基本就是上面 1/2/3/4 之一，不是脚本问题。
+7. **schedule 是 best-effort**：GitHub 官方不保证准点，整点前后高负载时可能延迟数分钟到数小时，甚至跳过；v3.36 默认已避开整点，但仍不能保证准点。需要精确时间请用 `workflow_dispatch` 或外部调度触发。
 
 ---
 
