@@ -80,6 +80,10 @@ As sessões das versões CN e internacional não são intercambiáveis.
 
 Nunca envie AT, RT, resultados de login ou arquivos de estado para o Git. Use variáveis de ambiente ou GitHub Secrets criptografados e mantenha os arquivos de estado fora do repositório.
 
+## Limites de uso e redistribuição
+
+O repositório oficial, scripts, documentação e Releases são gratuitos. Não os repackage como recursos pagos, remova a atribuição, personifique o autor, use a identidade ou os QR codes do autor como endosso, nem reposte o projeto em contas ou grupos não relacionados para desviar tráfego. Consulte o [Aviso de uso e redistribuição](../NOTICE.md). Violações podem resultar em pedidos de remoção; o autor pode pausar atualizações, arquivar ou excluir o repositório.
+
 ## Links
 
 - [Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)

@@ -80,6 +80,10 @@ python workbuddy_intl_daily.py
 
 不要提交 AT、RT、登入結果或執行期狀態檔。所有憑證只放在環境變數或加密 Secrets 中；Token 輪換後產生的本機狀態檔必須排除在 Git 之外。
 
+## 使用邊界與轉載聲明
+
+官方倉庫、腳本、文件與 Releases 均免費公開。禁止包裝成付費資源、刪除署名、冒充作者、使用作者身份或二維碼背書，亦禁止搬運到無關帳號或群組引流。完整規則見[使用邊界與轉載聲明](../NOTICE.md)。如有違規，作者可要求下架，並可暫停更新、封存或刪除倉庫。
+
 ## 連結
 
 - [Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)

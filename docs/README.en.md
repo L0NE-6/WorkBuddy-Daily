@@ -80,6 +80,10 @@ Use `WORKBUDDY_INTL_TOKENS` for multiple accounts. Tokens are not interchangeabl
 
 Never commit access tokens, refresh tokens, login results, or runtime state files. Use environment variables or encrypted GitHub Secrets. Rotated refresh tokens may be written to local state and must stay outside Git.
 
+## Usage and redistribution
+
+The official repository, scripts, documentation, and Releases are free. Do not repackage them as paid resources, remove attribution, impersonate the author, use the author's identity or QR codes as endorsement, or repost them through unrelated accounts or groups for traffic. See the [Usage and Redistribution Notice](../NOTICE.md). Violations may result in takedown requests; the author may pause updates, archive, or delete the repository.
+
 ## Links
 
 - [Releases](https://github.com/L0NE-6/WorkBuddy-Daily/releases)
