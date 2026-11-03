@@ -18,7 +18,7 @@
 <img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
 <a href="https://github.com/L0NE-6/WorkBuddy-Daily/releases"><img src="https://img.shields.io/badge/%E2%AC%87%20Download-Releases-2ea44f?style=for-the-badge&logo=github" /></a>
 
-[✨ 速览](#-30-秒速览) · [🚀 青龙部署](#-部署方式一青龙面板三步) · [☁️ Actions](#-部署方式二github-actions零服务器--推荐) · [🔐 登录工具](#-登录工具短信验证码获取-token) · [🔧 环境变量](#-环境变量) · [❓ 常见问题](#-常见问题) · [🚫 使用边界](#usage-policy) · [✦ 星轨](#-星轨-star-trail)
+[✨ 速览](#-30-秒速览) · [🚀 青龙部署](#-部署方式一青龙面板三步) · [☁️ Actions](#-部署方式二github-actions零服务器--推荐) · [🔐 登录工具](#-登录工具短信验证码获取-token) · [🔧 环境变量](#-环境变量) · [⏰ 定时排查](#-私有仓库--import-后定时不触发issue-43) · [🚫 使用边界](#usage-policy) · [✦ 星轨](#-星轨-star-trail)
 
 </div>
 
@@ -660,9 +660,10 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
+- **当前发布版**：`v37`（2026-11-04，文档发行版）· **脚本版本**：`v3.36`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
-- **当前脚本版本**：`v3.36`（Release `v36`）
+
 - Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
 - 每个 Release 都带完整包 zip、各脚本单文件与 `SHA256SUMS.txt` 校验文件，按需下载即可
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
