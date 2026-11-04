@@ -58,7 +58,7 @@ class TokenRegressionTests(unittest.TestCase):
                 token_file.write_text("@".join(at(name, "old") for name in names), encoding="utf-8")
                 gate = threading.Barrier(len(names))
                 def refresh(rt, old_at):
-                    name = rt.removesuffix("-old")
+                    name = rt.rsplit("-", 1)[0]
                     time.sleep(.001)
                     return at(name, "new"), name + "-new"
                 module = load_functions("_refresh_account_once", "_rebuild_token_file", "jwt_user", os=os, json=json,
@@ -205,3 +205,4 @@ class TokenRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
