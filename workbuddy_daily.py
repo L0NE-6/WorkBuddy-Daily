@@ -187,8 +187,6 @@
 """
 import sys, os, re, json, math, time, uuid, base64, glob, hashlib, hmac, glob as _glob, shutil, subprocess, threading, queue
 from urllib.parse import parse_qs, urlparse
-from contextlib import contextmanager
-import errno
 import requests
 
 
@@ -517,61 +515,6 @@ TOKEN_FILE = os.path.join(STATE_DIR, "WORKBUDDY_ACCESS_TOKEN.txt")
 BENEFIT_STATE_FILE = os.path.join(STATE_DIR, "workbuddy_benefit_state.json")
 
 
-# 固定锁文件不可删除：所有进程必须锁住同一个文件，而不是原子替换的状态文件。
-_TOKEN_STORE_THREAD_LOCK = threading.Lock()
-
-
-@contextmanager
-def _token_store_lock():
-    """串行化同一状态目录的线程与进程；持锁期间可安全读取、续期和写回。"""
-    with _TOKEN_STORE_THREAD_LOCK:
-        fd = os.open(REFRESH_STORE + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            if os.name == "nt":
-                import msvcrt
-                # 锁住固定偏移，即使锁文件为空也可以锁住文件尾之后的字节。
-                while True:
-                    try:
-                        os.lseek(fd, 0, os.SEEK_SET)
-                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                        break
-                    except OSError as exc:
-                        if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                            raise
-                        time.sleep(0.05)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if os.name == "nt":
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
-
-
-def _write_refresh_recovery(store):
-    """先写同目录恢复副本；发生替换故障时保留已轮换的令牌。"""
-    tmp = REFRESH_STORE + ".tmp-" + uuid.uuid4().hex
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(store, handle, ensure_ascii=False, indent=1)
-    return tmp
-
-
-def _save_refresh_store(store):
-    os.replace(_write_refresh_recovery(store), REFRESH_STORE)
-
-
-def _load_refresh_store():
-    with open(REFRESH_STORE, encoding="utf-8") as handle:
-        return json.load(handle)
-
-
 
 def _jwt_claims(tok):
     """本地解 JWT payload（不验签）：返回 dict；失败返回 {}。
@@ -663,22 +606,21 @@ def _parse_env_tokens(raw):
 
 def _bootstrap_store():
     """自举：json不存在时从环境变量 WORKBUDDY_REFRESH_TOKEN 生成（唯一变量）"""
-    with _token_store_lock():
-        if os.path.exists(REFRESH_STORE):
-            try:
-                if _load_refresh_store():
-                    return
-            except Exception:
-                pass
-        store = {}
-        for user, at, rt in _parse_env_tokens(os.environ.get("WORKBUDDY_REFRESH_TOKEN", "")):
-            if not (rt or at):      # 只有 AT 也收：能跑到 AT 过期为止（无法续期）
-                continue
-            key = user or (_token_user(at) if at else "acct-%d" % (len(store) + 1))
-            store[key] = {"refresh_token": rt, "access_token": at}
-        if store:
-            _save_refresh_store(store)
-            print("📝 已自动生成 wb_refresh_tokens.json（%d 个账号）" % len(store))
+    if os.path.exists(REFRESH_STORE):
+        try:
+            if json.load(open(REFRESH_STORE, encoding="utf-8")):
+                return
+        except Exception:
+            pass
+    store = {}
+    for user, at, rt in _parse_env_tokens(os.environ.get("WORKBUDDY_REFRESH_TOKEN", "")):
+        if not (rt or at):      # 只有 AT 也收：能跑到 AT 过期为止（无法续期）
+            continue
+        key = user or (_token_user(at) if at else "acct-%d" % (len(store) + 1))
+        store[key] = {"refresh_token": rt, "access_token": at}
+    if store:
+        json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        print("📝 已自动生成 wb_refresh_tokens.json（%d 个账号）" % len(store))
 
 
 _bootstrap_store()
@@ -779,39 +721,38 @@ def refresh_one(rt, at=""):
 
 def refresh_all(verbose=True):
     """刷新 wb_refresh_tokens.json 中所有账号，重建 token 文件。返回 {user: at}"""
-    with _token_store_lock():
-        store = {}
-        if os.path.exists(REFRESH_STORE):
-            try:
-                store = _load_refresh_store()
-            except Exception:
-                store = {}
-        updated = {}
-        for user, ent in list(store.items()):
-            rt = ent.get("refresh_token")
-            if not rt:
-                continue
-            try:
-                at, nrt = refresh_one(rt, ent.get("access_token", ""))
-            except Exception as e:
-                at, nrt = None, str(e)[:60]
-            if at:
-                real_user = jwt_user(at)
-                if real_user and real_user != "?" and real_user != user:
-                    store.pop(user, None)
-                    user = real_user
-                store[user] = {"refresh_token": nrt, "access_token": at,
-                               "updated": time.strftime("%Y-%m-%d %H:%M")}
-                updated[user] = at
-                if verbose:
-                    print("   🔄 %s token已续期" % user)
-            elif verbose:
-                print("   ⚠️ %s 续期失败: %s" % (user, nrt))
-            time.sleep(1)
-        if updated:
-            _save_refresh_store(store)
-            _rebuild_token_file(store)
-        return updated
+    store = {}
+    if os.path.exists(REFRESH_STORE):
+        try:
+            store = json.load(open(REFRESH_STORE, encoding="utf-8"))
+        except Exception:
+            store = {}
+    updated = {}
+    for user, ent in list(store.items()):
+        rt = ent.get("refresh_token")
+        if not rt:
+            continue
+        try:
+            at, nrt = refresh_one(rt, ent.get("access_token", ""))
+        except Exception as e:
+            at, nrt = None, str(e)[:60]
+        if at:
+            real_user = jwt_user(at)
+            if real_user and real_user != "?" and real_user != user:
+                store.pop(user, None)
+                user = real_user
+            store[user] = {"refresh_token": nrt, "access_token": at,
+                           "updated": time.strftime("%Y-%m-%d %H:%M")}
+            updated[user] = at
+            if verbose:
+                print("   🔄 %s token已续期" % user)
+        elif verbose:
+            print("   ⚠️ %s 续期失败: %s" % (user, nrt))
+        time.sleep(1)
+    if updated:
+        json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        _rebuild_token_file(store)
+    return updated
 
 
 def _rebuild_token_file(store):
@@ -819,8 +760,7 @@ def _rebuild_token_file(store):
     toks, seen = [], set()
     src = ""
     if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, encoding="utf-8") as handle:
-            src = handle.read().strip()
+        src = open(TOKEN_FILE, encoding="utf-8").read().strip()
     if src:
         for t in src.split("@"):
             t = t.strip()
@@ -839,244 +779,219 @@ def _rebuild_token_file(store):
                 seen.add(u)
                 toks.append(at)
     if toks:
-        with open(TOKEN_FILE, "w", encoding="utf-8") as handle:
-            handle.write("@".join(toks))
+        open(TOKEN_FILE, "w", encoding="utf-8").write("@".join(toks))
 
 
 def auto_refresh():
     """启动前自动续期：距上次刷新超10天(或AT快过期)的账号自动刷新"""
-    with _token_store_lock():
-        # 环境变量里的新RT合并进 store（支持随时用变量补充账号）
-        env_rt = os.environ.get("WORKBUDDY_REFRESH_TOKEN", "").strip()
-        if env_rt:
-            try:
-                store = _load_refresh_store() if os.path.exists(REFRESH_STORE) else {}
-            except Exception:
-                store = {}
-            existing_identity = {}
-            for key, ent in store.items():
-                ident = _account_identity(
-                    key, ent.get("access_token", ""), ent.get("refresh_token", ""))
-                if ident:
-                    existing_identity.setdefault(ident, key)
-            added = 0
-            for user, at, rt in _parse_env_tokens(env_rt):
-                if not (rt or at):
-                    continue
-                ident = _account_identity(user, at, rt)
-                if not ident:
-                    # 没有稳定身份：保留 store 里的现有账号，不用环境变量覆盖
-                    continue
-                if ident in existing_identity:
-                    continue
-                key = user or (_token_user(at) if at else "env-%d" % (len(store) + 1))
-                if key in store:       # 同名但不是同一稳定身份：保留旧账号，另起键名
-                    base = key
-                    suffix = 2
-                    while key in store:
-                        key = "%s-%d" % (base, suffix)
-                        suffix += 1
-                store[key] = {"refresh_token": rt or "", "access_token": at or ""}
-                existing_identity[ident] = key
-                added += 1
-            if added:
-                _save_refresh_store(store)
-                print("📝 从 WORKBUDDY_REFRESH_TOKEN 新增 %d 个账号的刷新令牌" % added)
-        if not os.path.exists(REFRESH_STORE):
-            return
+    # 环境变量里的新RT合并进 store（支持随时用变量补充账号）
+    env_rt = os.environ.get("WORKBUDDY_REFRESH_TOKEN", "").strip()
+    if env_rt:
         try:
-            store = _load_refresh_store()
+            store = json.load(open(REFRESH_STORE, encoding="utf-8")) if os.path.exists(REFRESH_STORE) else {}
         except Exception:
-            return
-        now = time.time()
-        due = {}
-        for user, ent in list(store.items()):
-            at = ent.get("access_token", "")
-            if not at:
-                # 只有RT没有AT（首次自举）：立即刷新
-                due[user] = ent
+            store = {}
+        existing_identity = {}
+        for key, ent in store.items():
+            ident = _account_identity(
+                key, ent.get("access_token", ""), ent.get("refresh_token", ""))
+            if ident:
+                existing_identity.setdefault(ident, key)
+        added = 0
+        for user, at, rt in _parse_env_tokens(env_rt):
+            if not (rt or at):
                 continue
-            try:
-                pay = at.split(".")[1]; pay += "=" * (4 - len(pay) % 4)
-                exp = json.loads(base64.urlsafe_b64decode(pay)).get("exp", 0)
-            except Exception:
-                exp = 0
-            try:
-                lt = time.mktime(time.strptime(ent.get("updated", ""), "%Y-%m-%d %H:%M"))
-            except Exception:
-                lt = 0
-            # 触发条件: 距上次刷新>10天(离线会话30天失效) 或 AT 7天内过期
-            if (now - lt > 10 * 86400) or (exp and exp - now < 7 * 86400):
-                due[user] = ent
-        if not due:
-            return
-        print("🔑 检查到 %d 个账号需要续期..." % len(due))
-        updated = {}
-        bad_rt = 0
-        for user, ent in due.items():
-            if not ent.get("refresh_token"):     # 只有 AT：刷不了，别报成“续期失败”
-                print("   ℹ️ %s 只有 AT 没有 RT，无法续期（AT 到期后请重新获取一行完整凭据）" % user)
+            ident = _account_identity(user, at, rt)
+            if not ident:
+                # 没有稳定身份：保留 store 里的现有账号，不用环境变量覆盖
                 continue
-            tips = _token_sanity(ent.get("refresh_token", ""), ent.get("access_token", ""))
-            if tips:
-                print("   🩺 %s 凭据体检:" % user)
-                for t in tips[:3]:
-                    print("      · %s" % t)
-            try:
-                at, nrt = refresh_one(ent.get("refresh_token", ""),
-                                      ent.get("access_token", ""))
-            except Exception:
-                at, nrt = None, "err"
-            if at:
-                store[user] = {"refresh_token": nrt, "access_token": at,
-                               "updated": time.strftime("%Y-%m-%d %H:%M")}
-                updated[user] = at
-                print("   🔄 %s token已自动续期(新有效期90天)" % user)
-            else:
-                print("   ⚠️ %s 续期失败: %s" % (user, nrt))
-                if ("token format error" in str(nrt)) or ("12153" in str(nrt)):
-                    bad_rt += 1
-            time.sleep(1)
-        if updated:
-            _save_refresh_store(store)
-            _rebuild_token_file(store)
-        if bad_rt:
-            print("   💡 RT 被服务端判为非法格式（token format error / 12153），常见原因：")
-            print("      1) 变量格式不是 手机号:AT:RT（顺序写反、带了引号/空格/换行也算）")
-            print("      2) 粘成了别的应用的 token（例：CodeBuddy CLI，或旧版 workbuddy-desktop.info 里另一套）")
-            print("      3) 该 RT 已被其他工具轮换过——最稳：python workbuddy_login.py 重新登录拿最新一行")
+            if ident in existing_identity:
+                continue
+            key = user or (_token_user(at) if at else "env-%d" % (len(store) + 1))
+            if key in store:       # 同名但不是同一稳定身份：保留旧账号，另起键名
+                base = key
+                suffix = 2
+                while key in store:
+                    key = "%s-%d" % (base, suffix)
+                    suffix += 1
+            store[key] = {"refresh_token": rt or "", "access_token": at or ""}
+            existing_identity[ident] = key
+            added += 1
+        if added:
+            json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+            print("📝 从 WORKBUDDY_REFRESH_TOKEN 新增 %d 个账号的刷新令牌" % added)
+    if not os.path.exists(REFRESH_STORE):
+        return
+    try:
+        store = json.load(open(REFRESH_STORE, encoding="utf-8"))
+    except Exception:
+        return
+    now = time.time()
+    due = {}
+    for user, ent in list(store.items()):
+        at = ent.get("access_token", "")
+        if not at:
+            # 只有RT没有AT（首次自举）：立即刷新
+            due[user] = ent
+            continue
+        try:
+            pay = at.split(".")[1]; pay += "=" * (4 - len(pay) % 4)
+            exp = json.loads(base64.urlsafe_b64decode(pay)).get("exp", 0)
+        except Exception:
+            exp = 0
+        try:
+            lt = time.mktime(time.strptime(ent.get("updated", ""), "%Y-%m-%d %H:%M"))
+        except Exception:
+            lt = 0
+        # 触发条件: 距上次刷新>10天(离线会话30天失效) 或 AT 7天内过期
+        if (now - lt > 10 * 86400) or (exp and exp - now < 7 * 86400):
+            due[user] = ent
+    if not due:
+        return
+    print("🔑 检查到 %d 个账号需要续期..." % len(due))
+    updated = {}
+    bad_rt = 0
+    for user, ent in due.items():
+        if not ent.get("refresh_token"):     # 只有 AT：刷不了，别报成“续期失败”
+            print("   ℹ️ %s 只有 AT 没有 RT，无法续期（AT 到期后请重新获取一行完整凭据）" % user)
+            continue
+        tips = _token_sanity(ent.get("refresh_token", ""), ent.get("access_token", ""))
+        if tips:
+            print("   🩺 %s 凭据体检:" % user)
+            for t in tips[:3]:
+                print("      · %s" % t)
+        try:
+            at, nrt = refresh_one(ent.get("refresh_token", ""),
+                                  ent.get("access_token", ""))
+        except Exception:
+            at, nrt = None, "err"
+        if at:
+            store[user] = {"refresh_token": nrt, "access_token": at,
+                           "updated": time.strftime("%Y-%m-%d %H:%M")}
+            updated[user] = at
+            print("   🔄 %s token已自动续期(新有效期90天)" % user)
+        else:
+            print("   ⚠️ %s 续期失败: %s" % (user, nrt))
+            if ("token format error" in str(nrt)) or ("12153" in str(nrt)):
+                bad_rt += 1
+        time.sleep(1)
+    if updated:
+        json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        _rebuild_token_file(store)
+    if bad_rt:
+        print("   💡 RT 被服务端判为非法格式（token format error / 12153），常见原因：")
+        print("      1) 变量格式不是 手机号:AT:RT（顺序写反、带了引号/空格/换行也算）")
+        print("      2) 粘成了别的应用的 token（例：CodeBuddy CLI，或旧版 workbuddy-desktop.info 里另一套）")
+        print("      3) 该 RT 已被其他工具轮换过——最稳：python workbuddy_login.py 重新登录拿最新一行")
 
 
 def _refresh_account_once(acc, log):
     """401 后仅续期令牌池中的当前账号，并保护其他账号的状态。"""
-    with _token_store_lock():
-        refresh_token = str(acc.get("refresh_token") or "")
-        user = str(acc.get("note") or "")
-        if not refresh_token:
-            log("  ❌ 401 后需要续期，但该账号没有 RT，无法自动恢复")
-            return False
-        # 在服务端轮换之前确认能够读取原状态，并且账号仍持有同一个 RT。
-        try:
-            with open(REFRESH_STORE, encoding="utf-8") as handle:
-                store = json.load(handle)
-            if not isinstance(store, dict) or not isinstance(store.get(user), dict):
-                raise ValueError("账号不存在于令牌池")
-            if store[user].get("refresh_token") != refresh_token:
-                current = store[user]
-                if not current.get("refresh_token") or not current.get("access_token"):
-                    raise ValueError("令牌池中的新凭据不完整")
-                acc["access_token"] = current["access_token"]
-                acc["refresh_token"] = current["refresh_token"]
-                log("  🔄 已载入其他执行者续期的令牌，重试当前账号")
-                return True
-        except (OSError, ValueError, TypeError) as exc:
-            log("  ❌ 401 后无法安全读取账号状态，跳过续期: %s" % str(exc)[:80])
-            return False
-        try:
-            access_token, next_refresh = refresh_one(refresh_token, acc.get("access_token", ""))
-        except Exception as exc:
-            log("  ❌ 401 后自动续期异常: %s" % str(exc)[:80])
-            return False
-        if not access_token:
-            log("  ❌ 401 后自动续期失败: %s" % str(next_refresh)[:100])
-            return False
-        # 即使非协作写入者在网络请求期间修改了文件，也不能回滚其更新。
-        # 本程序的其他写入路径都持有同一把锁。
-        rotated = {**store[user], "refresh_token": next_refresh or refresh_token,
+    refresh_token = str(acc.get("refresh_token") or "")
+    user = str(acc.get("note") or "")
+    if not refresh_token:
+        log("  ❌ 401 后需要续期，但该账号没有 RT，无法自动恢复")
+        return False
+    # 在服务端轮换之前确认能够读取原状态，并且账号仍持有同一个 RT。
+    try:
+        with open(REFRESH_STORE, encoding="utf-8") as handle:
+            store = json.load(handle)
+        if not isinstance(store, dict) or not isinstance(store.get(user), dict):
+            raise ValueError("账号不存在于令牌池")
+        if store[user].get("refresh_token") != refresh_token:
+            raise ValueError("令牌池中的账号凭据已变化")
+    except (OSError, ValueError, TypeError) as exc:
+        log("  ❌ 401 后无法安全读取账号状态，跳过续期: %s" % str(exc)[:80])
+        return False
+    try:
+        access_token, next_refresh = refresh_one(refresh_token, acc.get("access_token", ""))
+    except Exception as exc:
+        log("  ❌ 401 后自动续期异常: %s" % str(exc)[:80])
+        return False
+    if not access_token:
+        log("  ❌ 401 后自动续期失败: %s" % str(next_refresh)[:100])
+        return False
+    # 保留现有稳定键和未知字段；不能用返回的用户名覆盖其他账号。
+    store[user] = {**store[user], "refresh_token": next_refresh or refresh_token,
                    "access_token": access_token,
                    "updated": time.strftime("%Y-%m-%d %H:%M")}
-        try:
-            with open(REFRESH_STORE, encoding="utf-8") as handle:
-                latest = json.load(handle)
-            if not isinstance(latest, dict) or not isinstance(latest.get(user), dict):
-                raise ValueError("账号不存在于最新令牌池")
-            if latest[user].get("refresh_token") != refresh_token:
-                raise ValueError("续期期间账号 RT 已变化")
-            latest[user] = {**latest[user], "refresh_token": rotated["refresh_token"],
-                            "access_token": access_token, "updated": rotated["updated"]}
-            store = latest
-        except Exception as exc:
-            # 最新状态无法合并时保留新令牌供人工恢复。
-            store[user] = rotated
-            try:
-                _write_refresh_recovery(store)
-            except Exception:
-                pass
-            log("  ❌ 续期成功但令牌池无法安全合并: %s" % str(exc)[:80])
-            raise RuntimeError("401 续期后的令牌状态未能保存") from exc
-        try:
-            _save_refresh_store(store)
-        except Exception as exc:
-            log("  ❌ 续期成功但令牌池保存失败，请检查工作目录: %s" % str(exc)[:80])
-            raise RuntimeError("401 续期后的令牌状态未能保存") from exc
-        acc["access_token"] = access_token
-        acc["refresh_token"] = rotated["refresh_token"]
-        try:
-            _rebuild_token_file(store)
-        except Exception as exc:
-            log("  ⚠️ 令牌池已保存，但 AT 文件重建失败: %s" % str(exc)[:80])
-        log("  🔄 401 后已续期一次，重试当前账号")
-        return True
+    acc["access_token"] = access_token
+    acc["refresh_token"] = next_refresh or refresh_token
+    tmp = REFRESH_STORE + ".tmp-" + uuid.uuid4().hex
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(store, handle, ensure_ascii=False, indent=1)
+        os.replace(tmp, REFRESH_STORE)
+    except Exception as exc:
+        # 保留完整临时文件以便恢复已经轮换的令牌；不能当成成功继续。
+        log("  ❌ 续期成功但令牌池保存失败，请检查工作目录: %s" % str(exc)[:80])
+        raise RuntimeError("401 续期后的令牌状态未能保存") from exc
+    try:
+        _rebuild_token_file(store)
+    except Exception as exc:
+        log("  ⚠️ 令牌池已保存，但 AT 文件重建失败: %s" % str(exc)[:80])
+    log("  🔄 401 后已续期一次，重试当前账号")
+    return True
 
 
 def load_accounts():
     auto_refresh()  # 依据 RT 变量/json 续期，并同步 token 文件
-    with _token_store_lock():
-        # 续期池优先：与变量实时同步、以手机号为名；本地 token 文件仅作回退
-        # (否则新加账号在下次续期前会被旧 token 文件吞掉)
-        if os.path.exists(REFRESH_STORE):
-            try:
-                store = _load_refresh_store()
-                accs = [{"note": user,
-                         "access_token": v.get("access_token", ""),
-                         "refresh_token": v.get("refresh_token", "")}
-                        for user, v in store.items()]
-                if accs:
-                    no_at = [a["note"] for a in accs if not a["access_token"]]
-                    if no_at:
-                        print("⚠️ 以下账号无 AT（续期可能失败），仍会尝试执行: %s" % ", ".join(no_at))
-                    return accs
-            except Exception:
-                pass
-        env = ""
-        if os.path.exists(TOKEN_FILE):  # 回退：本地文件(续期后最新)
-            env = open(TOKEN_FILE, encoding="utf-8").read().strip()
-        if env:
-            items = [x.strip() for x in env.replace("@", "\n").splitlines() if x.strip()]
-            return [{"note": "账号%d" % (i + 1), "access_token": t}
-                    for i, t in enumerate(items)]
-        print("❌ 未找到可用账号（环境变量与本地令牌文件都没给出凭据）")
-        _raw = os.environ.get("WORKBUDDY_REFRESH_TOKEN", "").strip()
-        if _raw:
-            lines = [x for x in _raw.replace("@", "\n").splitlines() if x.strip()]
-            kinds = []
-            for x in lines[:5]:
-                if "$wbEncrypted" in x or '"envelope"' in x:
-                    kinds.append("加密信封 ✗（5.6.2+ AtRestEncryption，需改用 workbuddy_login.py）")
-                    continue
-                parts = x.split(":", 2)
-                if len(parts) >= 3 and not parts[0].startswith("eyJ"):
-                    kinds.append("手机号:AT:RT ✓")
-                elif len(parts) == 2 and parts[0].strip().startswith("eyJ"):
-                    kinds.append("AT:RT ✓（无手机号，已自动识别）")
-                elif len(parts) == 2:
-                    kinds.append("手机号:RT ✓")
-                else:
-                    kinds.append("单 token(%s)" % (_token_kind(x.strip()) or "无法识别"))
-            print("   ℹ️ 该变量已设置：%d 行；逐行识别：%s" % (len(lines), "、".join(kinds)))
-            print("      若出现「无法识别」：复制不完整 / 不是 eyJ 开头的 JWT / 混入了全角逗号冒号；")
-            print("      正确姿势（每行一个）：手机号:AT:RT  或  AT:RT（AT/RT 均为 eyJ 长串，英文冒号）")
-            print("      青龙用户：确认变量名完全一致、且变量处于「启用」状态；改完直接重跑本任务即可")
-            print("      若出现「加密信封」：新版客户端把凭据加了密，无法直接拷贝——请用 workbuddy_login.py")
-        else:
-            print("   ℹ️ 未读到 WORKBUDDY_REFRESH_TOKEN：青龙请确认变量名/启用状态；")
-            print("      GitHub Actions 请确认已加到 Settings → Secrets → Actions（名字大小写一致）")
-        print("   📖 获取方式：python workbuddy_login.py（短信登录，直接输出一行可粘贴凭据）")
-        # 青龙专属坑（issue #16 实证）：裸 python 调用不注入面板变量
-        if os.environ.get("QL_DIR") or os.path.exists("/ql"):
-            print("   🐧 检测到青龙环境：任务命令请用青龙运行器 —— `task workbuddy_daily.py`（从脚本列表新建任务）")
-            print("      不要写裸 `python workbuddy_daily.py`：裸 python 不会注入面板变量，就会报这个错")
-        sys.exit(1)
+    # 续期池优先：与变量实时同步、以手机号为名；本地 token 文件仅作回退
+    # (否则新加账号在下次续期前会被旧 token 文件吞掉)
+    if os.path.exists(REFRESH_STORE):
+        try:
+            store = json.load(open(REFRESH_STORE, encoding="utf-8"))
+            accs = [{"note": user,
+                     "access_token": v.get("access_token", ""),
+                     "refresh_token": v.get("refresh_token", "")}
+                    for user, v in store.items()]
+            if accs:
+                no_at = [a["note"] for a in accs if not a["access_token"]]
+                if no_at:
+                    print("⚠️ 以下账号无 AT（续期可能失败），仍会尝试执行: %s" % ", ".join(no_at))
+                return accs
+        except Exception:
+            pass
+    env = ""
+    if os.path.exists(TOKEN_FILE):  # 回退：本地文件(续期后最新)
+        env = open(TOKEN_FILE, encoding="utf-8").read().strip()
+    if env:
+        items = [x.strip() for x in env.replace("@", "\n").splitlines() if x.strip()]
+        return [{"note": "账号%d" % (i + 1), "access_token": t}
+                for i, t in enumerate(items)]
+    print("❌ 未找到可用账号（环境变量与本地令牌文件都没给出凭据）")
+    _raw = os.environ.get("WORKBUDDY_REFRESH_TOKEN", "").strip()
+    if _raw:
+        lines = [x for x in _raw.replace("@", "\n").splitlines() if x.strip()]
+        kinds = []
+        for x in lines[:5]:
+            if "$wbEncrypted" in x or '"envelope"' in x:
+                kinds.append("加密信封 ✗（5.6.2+ AtRestEncryption，需改用 workbuddy_login.py）")
+                continue
+            parts = x.split(":", 2)
+            if len(parts) >= 3 and not parts[0].startswith("eyJ"):
+                kinds.append("手机号:AT:RT ✓")
+            elif len(parts) == 2 and parts[0].strip().startswith("eyJ"):
+                kinds.append("AT:RT ✓（无手机号，已自动识别）")
+            elif len(parts) == 2:
+                kinds.append("手机号:RT ✓")
+            else:
+                kinds.append("单 token(%s)" % (_token_kind(x.strip()) or "无法识别"))
+        print("   ℹ️ 该变量已设置：%d 行；逐行识别：%s" % (len(lines), "、".join(kinds)))
+        print("      若出现「无法识别」：复制不完整 / 不是 eyJ 开头的 JWT / 混入了全角逗号冒号；")
+        print("      正确姿势（每行一个）：手机号:AT:RT  或  AT:RT（AT/RT 均为 eyJ 长串，英文冒号）")
+        print("      青龙用户：确认变量名完全一致、且变量处于「启用」状态；改完直接重跑本任务即可")
+        print("      若出现「加密信封」：新版客户端把凭据加了密，无法直接拷贝——请用 workbuddy_login.py")
+    else:
+        print("   ℹ️ 未读到 WORKBUDDY_REFRESH_TOKEN：青龙请确认变量名/启用状态；")
+        print("      GitHub Actions 请确认已加到 Settings → Secrets → Actions（名字大小写一致）")
+    print("   📖 获取方式：python workbuddy_login.py（短信登录，直接输出一行可粘贴凭据）")
+    # 青龙专属坑（issue #16 实证）：裸 python 调用不注入面板变量
+    if os.environ.get("QL_DIR") or os.path.exists("/ql"):
+        print("   🐧 检测到青龙环境：任务命令请用青龙运行器 —— `task workbuddy_daily.py`（从脚本列表新建任务）")
+        print("      不要写裸 `python workbuddy_daily.py`：裸 python 不会注入面板变量，就会报这个错")
+    sys.exit(1)
 
 
 ACCOUNTS = load_accounts()
