@@ -191,6 +191,19 @@ class TokenRegressionTests(unittest.TestCase):
             self.assertTrue(module["_refresh_account_once"](second, logs.append))
             self.assertEqual("new-rt", second["refresh_token"])
 
+    def test_auto_refresh_does_not_replace_unreadable_store_with_environment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            path.write_text("{broken", encoding="utf-8")
+            refresh = mock.Mock()
+            module = load_functions("auto_refresh", os=os, json=json, time=time, REFRESH_STORE=str(path),
+                                    refresh_one=refresh, _rebuild_token_file=mock.Mock())
+            with mock.patch.dict(os.environ, {"WORKBUDDY_REFRESH_TOKEN": "new:at:rt"}):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    module["auto_refresh"]()
+            self.assertEqual("{broken", path.read_text(encoding="utf-8"))
+            refresh.assert_not_called()
+
     def test_bootstrap_does_not_replace_unreadable_store_with_environment(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "tokens.json"
@@ -205,4 +218,3 @@ class TokenRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
