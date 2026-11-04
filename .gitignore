@@ -1,6 +1,7 @@
 # 凭据与运行数据（切勿提交）
 wb_refresh_tokens.json
 wb_refresh_tokens.json.tmp-*
+wb_refresh_tokens.json.lock
 WORKBUDDY_ACCESS_TOKEN.txt
 wb_login_result.json
 wb_intl_login_result.json
