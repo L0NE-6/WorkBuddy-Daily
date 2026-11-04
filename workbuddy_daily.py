@@ -886,45 +886,51 @@ def auto_refresh():
 
 
 def _refresh_account_once(acc, log):
-    """账号请求遇 401 时只刷新一次并回写状态；刷新失败不冒充成功。"""
+    """401 后仅续期令牌池中的当前账号，并保护其他账号的状态。"""
     refresh_token = str(acc.get("refresh_token") or "")
+    user = str(acc.get("note") or "")
     if not refresh_token:
         log("  ❌ 401 后需要续期，但该账号没有 RT，无法自动恢复")
         return False
+    # 在服务端轮换之前确认能够读取原状态，并且账号仍持有同一个 RT。
     try:
-        access_token, next_refresh = refresh_one(
-            refresh_token, acc.get("access_token", ""))
+        with open(REFRESH_STORE, encoding="utf-8") as handle:
+            store = json.load(handle)
+        if not isinstance(store, dict) or not isinstance(store.get(user), dict):
+            raise ValueError("账号不存在于令牌池")
+        if store[user].get("refresh_token") != refresh_token:
+            raise ValueError("令牌池中的账号凭据已变化")
+    except (OSError, ValueError, TypeError) as exc:
+        log("  ❌ 401 后无法安全读取账号状态，跳过续期: %s" % str(exc)[:80])
+        return False
+    try:
+        access_token, next_refresh = refresh_one(refresh_token, acc.get("access_token", ""))
     except Exception as exc:
         log("  ❌ 401 后自动续期异常: %s" % str(exc)[:80])
         return False
     if not access_token:
         log("  ❌ 401 后自动续期失败: %s" % str(next_refresh)[:100])
         return False
-    user = jwt_user(access_token)
-    if not user or user == "?":
-        user = str(acc.get("note") or "")
-    store = {}
-    if os.path.exists(REFRESH_STORE):
-        try:
-            store = json.load(open(REFRESH_STORE, encoding="utf-8"))
-        except Exception:
-            store = {}
-    if user:
-        store[user] = {
-            "refresh_token": next_refresh,
-            "access_token": access_token,
-            "updated": time.strftime("%Y-%m-%d %H:%M"),
-        }
-        try:
-            with open(REFRESH_STORE, "w", encoding="utf-8") as handle:
-                json.dump(store, handle, ensure_ascii=False, indent=1)
-            _rebuild_token_file(store)
-        except Exception as exc:
-            log("  ⚠️ 续期成功但状态回写失败: %s" % str(exc)[:80])
+    # 保留现有稳定键和未知字段；不能用返回的用户名覆盖其他账号。
+    store[user] = {**store[user], "refresh_token": next_refresh or refresh_token,
+                   "access_token": access_token,
+                   "updated": time.strftime("%Y-%m-%d %H:%M")}
     acc["access_token"] = access_token
-    acc["refresh_token"] = next_refresh
-    if user:
-        acc["note"] = user
+    acc["refresh_token"] = next_refresh or refresh_token
+    tmp = REFRESH_STORE + ".tmp-" + uuid.uuid4().hex
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(store, handle, ensure_ascii=False, indent=1)
+        os.replace(tmp, REFRESH_STORE)
+    except Exception as exc:
+        # 保留完整临时文件以便恢复已经轮换的令牌；不能当成成功继续。
+        log("  ❌ 续期成功但令牌池保存失败，请检查工作目录: %s" % str(exc)[:80])
+        raise RuntimeError("401 续期后的令牌状态未能保存") from exc
+    try:
+        _rebuild_token_file(store)
+    except Exception as exc:
+        log("  ⚠️ 令牌池已保存，但 AT 文件重建失败: %s" % str(exc)[:80])
     log("  🔄 401 后已续期一次，重试当前账号")
     return True
 

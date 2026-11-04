@@ -12,6 +12,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -444,39 +445,56 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual([], claimed)
         self.assertIn("不按 1 冒领", " ".join(logs))
 
-    def test_401_refresh_helper_updates_state_once(self):
+    def test_401_refresh_preserves_other_accounts_and_stable_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
-            refresh_calls = []
-            module = load_functions(
-                "_refresh_account_once",
-                os=os, json=json,
-                time=type("Time", (), {
-                    "strftime": staticmethod(lambda fmt: "2026-10-27 12:00"),
-                }),
-                REFRESH_STORE=store_path,
-                refresh_one=lambda rt, at="": (
-                    refresh_calls.append((rt, at)) or ("new-access", "new-refresh")),
-                jwt_user=lambda token: "user-1",
-                _rebuild_token_file=lambda store: None,
-            )
-            account = {
-                "note": "old-note",
-                "access_token": "old-access",
-                "refresh_token": "old-refresh",
-            }
-            logs = []
-            self.assertTrue(
-                module["_refresh_account_once"](account, logs.append))
-            self.assertEqual("new-access", account["access_token"])
-            self.assertEqual("new-refresh", account["refresh_token"])
-            self.assertEqual("user-1", account["note"])
-            with open(store_path, encoding="utf-8") as handle:
-                store = json.load(handle)
-            self.assertEqual(
-                "new-refresh", store["user-1"]["refresh_token"])
-            self.assertIn("已续期一次", " ".join(logs))
-            self.assertEqual([("old-refresh", "old-access")], refresh_calls)
+            path = Path(temp_dir) / "tokens.json"
+            original = {"first": {"access_token": "old-at", "refresh_token": "old-rt", "extra": "keep"},
+                        "second": {"access_token": "other-at", "refresh_token": "other-rt"}}
+            path.write_text(json.dumps(original), encoding="utf-8")
+            calls = []
+            module = load_functions("_refresh_account_once", os=os, json=json, uuid=uuid, time=time,
+                REFRESH_STORE=str(path), refresh_one=lambda rt, at: calls.append((rt, at)) or ("new-at", "new-rt"),
+                _rebuild_token_file=lambda store: None)
+            account = {"note": "first", "access_token": "old-at", "refresh_token": "old-rt"}
+            self.assertTrue(module["_refresh_account_once"](account, lambda message: None))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(original["second"], saved["second"])
+            self.assertEqual("keep", saved["first"]["extra"])
+            self.assertEqual("new-rt", saved["first"]["refresh_token"])
+            self.assertEqual("first", account["note"])
+            self.assertEqual([("old-rt", "old-at")], calls)
+
+    def test_401_refresh_rejects_unreadable_or_changed_pool_before_network(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            refresh = mock.Mock()
+            module = load_functions("_refresh_account_once", os=os, json=json, uuid=uuid, time=time,
+                REFRESH_STORE=str(path), refresh_one=refresh, _rebuild_token_file=mock.Mock())
+            account = {"note": "first", "refresh_token": "old-rt"}
+            for contents in (None, "{", "[]", json.dumps({"first": {"refresh_token": "different"}})):
+                with self.subTest(contents=contents):
+                    if contents is not None:
+                        path.write_text(contents, encoding="utf-8")
+                    self.assertFalse(module["_refresh_account_once"](account, lambda message: None))
+                    if contents is not None:
+                        self.assertEqual(contents, path.read_text(encoding="utf-8"))
+            refresh.assert_not_called()
+
+    def test_401_refresh_write_failure_keeps_original_and_recovery_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            original = json.dumps({"first": {"refresh_token": "old-rt"}, "second": {"refresh_token": "other-rt"}})
+            path.write_text(original, encoding="utf-8")
+            module = load_functions("_refresh_account_once", os=os, json=json, uuid=uuid, time=time,
+                REFRESH_STORE=str(path), refresh_one=lambda rt, at: ("new-at", "new-rt"),
+                _rebuild_token_file=mock.Mock())
+            with mock.patch.object(os, "replace", side_effect=OSError("failed")):
+                with self.assertRaises(RuntimeError):
+                    module["_refresh_account_once"]({"note": "first", "refresh_token": "old-rt"}, lambda message: None)
+            self.assertEqual(original, path.read_text(encoding="utf-8"))
+            copies = list(Path(temp_dir).glob("tokens.json.tmp-*"))
+            self.assertEqual(1, len(copies))
+            self.assertEqual("new-rt", json.loads(copies[0].read_text(encoding="utf-8"))["first"]["refresh_token"])
 
     def test_refresh_one_sends_cn_header_subset_and_empty_body(self):
         session = FakeSession([FakeResponse(payload={
