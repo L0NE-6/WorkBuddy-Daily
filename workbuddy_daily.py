@@ -1003,8 +1003,9 @@ def _refresh_account_once(acc, log):
                 latest = json.load(handle)
             if not isinstance(latest, dict) or not isinstance(latest.get(user), dict):
                 raise ValueError("账号不存在于最新令牌池")
-            if latest[user].get("refresh_token") != refresh_token:
-                raise ValueError("续期期间账号 RT 已变化")
+            if (latest[user].get("refresh_token") != refresh_token or
+                    latest[user].get("access_token") != store[user].get("access_token")):
+                raise ValueError("续期期间账号凭据已变化")
             latest[user] = {**latest[user], "refresh_token": rotated["refresh_token"],
                             "access_token": access_token, "updated": rotated["updated"]}
             store = latest

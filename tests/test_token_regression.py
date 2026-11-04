@@ -76,6 +76,25 @@ class TokenRegressionTests(unittest.TestCase):
                 self.assertEqual({at(name, "new") for name in names},
                                  set(token_file.read_text(encoding="utf-8").split("@")))
 
+    def test_same_rt_with_concurrent_at_change_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "tokens.json"
+            path.write_text(json.dumps({"user": {"access_token": "old-at", "refresh_token": "old-rt"}}), encoding="utf-8")
+            def refresh(rt, at):
+                path.write_text(json.dumps({"user": {"access_token": "external-at", "refresh_token": "old-rt"}}), encoding="utf-8")
+                return "new-at", "new-rt"
+            module = load_functions("_refresh_account_once", os=os, json=json, time=time, REFRESH_STORE=str(path),
+                                    refresh_one=refresh, _rebuild_token_file=mock.Mock())
+            account = {"note": "user", "access_token": "old-at", "refresh_token": "old-rt"}
+            with self.assertRaises(RuntimeError):
+                module["_refresh_account_once"](account, lambda message: None)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("external-at", saved["user"]["access_token"])
+            copies = list(root.glob("tokens.json.tmp-*"))
+            self.assertEqual(1, len(copies))
+            self.assertEqual("new-rt", json.loads(copies[0].read_text(encoding="utf-8"))["user"]["refresh_token"])
+
     def test_invalid_latest_store_keeps_recovery_copy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
