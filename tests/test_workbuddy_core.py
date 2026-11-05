@@ -9,9 +9,12 @@ import os
 import re
 import sys
 import tempfile
+import threading
+import errno
 import time
 import types
 import unittest
+from unittest import mock
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -41,6 +44,12 @@ def assignment_value(name):
 
 def load_functions(*names, **globals_):
     namespace = {"__builtins__": __builtins__, **globals_}
+    if set(names) & {"_bootstrap_store", "refresh_all", "auto_refresh", "_refresh_account_once", "load_accounts"}:
+        names = ("_token_store_lock", "_write_refresh_recovery", "_save_refresh_store", "_load_refresh_store", *names)
+        namespace.update(contextmanager=contextlib.contextmanager, threading=threading,
+                         errno=errno, _TOKEN_STORE_THREAD_LOCK=threading.Lock(), uuid=uuid)
+    if "_rebuild_token_file" in names and "_jwt_claims" not in names:
+        names = ("_jwt_claims", *names)
     body = [FUNCTIONS[name] for name in names]
     module = ast.Module(body=body, type_ignores=[])
     exec(compile(module, str(SOURCE_PATH), "exec"), namespace)
@@ -444,39 +453,162 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual([], claimed)
         self.assertIn("不按 1 冒领", " ".join(logs))
 
-    def test_401_refresh_helper_updates_state_once(self):
+    def test_401_refresh_preserves_other_accounts_and_stable_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
-            refresh_calls = []
-            module = load_functions(
-                "_refresh_account_once",
-                os=os, json=json,
-                time=type("Time", (), {
-                    "strftime": staticmethod(lambda fmt: "2026-10-27 12:00"),
-                }),
-                REFRESH_STORE=store_path,
-                refresh_one=lambda rt, at="": (
-                    refresh_calls.append((rt, at)) or ("new-access", "new-refresh")),
-                jwt_user=lambda token: "user-1",
-                _rebuild_token_file=lambda store: None,
-            )
-            account = {
-                "note": "old-note",
-                "access_token": "old-access",
-                "refresh_token": "old-refresh",
-            }
-            logs = []
-            self.assertTrue(
-                module["_refresh_account_once"](account, logs.append))
-            self.assertEqual("new-access", account["access_token"])
-            self.assertEqual("new-refresh", account["refresh_token"])
-            self.assertEqual("user-1", account["note"])
-            with open(store_path, encoding="utf-8") as handle:
-                store = json.load(handle)
-            self.assertEqual(
-                "new-refresh", store["user-1"]["refresh_token"])
-            self.assertIn("已续期一次", " ".join(logs))
-            self.assertEqual([("old-refresh", "old-access")], refresh_calls)
+            path = Path(temp_dir) / "tokens.json"
+            original = {"first": {"access_token": "old-at", "refresh_token": "old-rt", "extra": "keep"},
+                        "second": {"access_token": "other-at", "refresh_token": "other-rt"}}
+            path.write_text(json.dumps(original), encoding="utf-8")
+            calls = []
+            module = load_functions("_refresh_account_once", os=os, json=json, uuid=uuid, time=time,
+                REFRESH_STORE=str(path), refresh_one=lambda rt, at: calls.append((rt, at)) or ("new-at", "new-rt"),
+                _rebuild_token_file=lambda store: None)
+            account = {"note": "first", "access_token": "old-at", "refresh_token": "old-rt"}
+            self.assertTrue(module["_refresh_account_once"](account, lambda message: None))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(original["second"], saved["second"])
+            self.assertEqual("keep", saved["first"]["extra"])
+            self.assertEqual("new-rt", saved["first"]["refresh_token"])
+            self.assertEqual("first", account["note"])
+            self.assertEqual([("old-rt", "old-at")], calls)
+
+    def test_401_refresh_rejects_unreadable_or_changed_pool_before_network(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            refresh = mock.Mock()
+            module = load_functions("_refresh_account_once", os=os, json=json, uuid=uuid, time=time,
+                REFRESH_STORE=str(path), refresh_one=refresh, _rebuild_token_file=mock.Mock())
+            account = {"note": "first", "refresh_token": "old-rt"}
+            for contents in (None, "{", "[]", json.dumps({"first": {"refresh_token": "different"}})):
+                with self.subTest(contents=contents):
+                    if contents is not None:
+                        path.write_text(contents, encoding="utf-8")
+                    self.assertFalse(module["_refresh_account_once"](account, lambda message: None))
+                    if contents is not None:
+                        self.assertEqual(contents, path.read_text(encoding="utf-8"))
+            refresh.assert_not_called()
+
+    def test_401_refresh_write_failure_keeps_original_and_recovery_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            original = json.dumps({"first": {"refresh_token": "old-rt"}, "second": {"refresh_token": "other-rt"}})
+            path.write_text(original, encoding="utf-8")
+            module = load_functions("_refresh_account_once", os=os, json=json, uuid=uuid, time=time,
+                REFRESH_STORE=str(path), refresh_one=lambda rt, at: ("new-at", "new-rt"),
+                _rebuild_token_file=mock.Mock())
+            with mock.patch.object(os, "replace", side_effect=OSError("failed")):
+                with self.assertRaises(RuntimeError):
+                    module["_refresh_account_once"]({"note": "first", "refresh_token": "old-rt"}, lambda message: None)
+            self.assertEqual(original, path.read_text(encoding="utf-8"))
+            copies = list(Path(temp_dir).glob("tokens.json.tmp-*"))
+            self.assertEqual(1, len(copies))
+            self.assertEqual("new-rt", json.loads(copies[0].read_text(encoding="utf-8"))["first"]["refresh_token"])
+
+    def test_401_concurrent_refresh_preserves_both_accounts_and_token_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            token_file = Path(temp_dir) / "access.txt"
+            path.write_text(json.dumps({name: {"access_token": name + "-old-at", "refresh_token": name + "-old-rt"}
+                                        for name in ("first", "second")}), encoding="utf-8")
+            entered, release = threading.Event(), threading.Event()
+            calls = []
+            def refresh(rt, at):
+                calls.append(rt)
+                if rt == "first-old-rt":
+                    entered.set()
+                    if not release.wait(5):
+                        raise RuntimeError("test timed out")
+                return rt.replace("old-rt", "new-at"), rt.replace("old-rt", "new-rt")
+            module = load_functions("_refresh_account_once", "_rebuild_token_file", os=os, json=json, time=time,
+                REFRESH_STORE=str(path), TOKEN_FILE=str(token_file), refresh_one=refresh,
+                jwt_user=lambda token: token.split("-")[0])
+            accounts = [{"note": name, "access_token": name + "-old-at", "refresh_token": name + "-old-rt"}
+                        for name in ("first", "second")]
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(module["_refresh_account_once"], accounts[0], lambda message: None)
+                self.assertTrue(entered.wait(5))
+                second = executor.submit(module["_refresh_account_once"], accounts[1], lambda message: None)
+                try:
+                    self.assertEqual(["first-old-rt"], calls)
+                finally:
+                    release.set()
+                self.assertTrue(first.result(timeout=5))
+                self.assertTrue(second.result(timeout=5))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("first-new-rt", saved["first"]["refresh_token"])
+            self.assertEqual("second-new-rt", saved["second"]["refresh_token"])
+            self.assertEqual({"first-new-at", "second-new-at"}, set(token_file.read_text(encoding="utf-8").split("@")))
+
+    def test_401_same_account_concurrent_refresh_uses_one_rotation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            path.write_text(json.dumps({"first": {"access_token": "old-at", "refresh_token": "old-rt"}}), encoding="utf-8")
+            entered, release = threading.Event(), threading.Event()
+            calls = []
+            def refresh(rt, at):
+                calls.append(rt)
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("test timed out")
+                return "new-at", "new-rt"
+            module = load_functions("_refresh_account_once", os=os, json=json, time=time, REFRESH_STORE=str(path),
+                                    refresh_one=refresh, _rebuild_token_file=mock.Mock())
+            accounts = [{"note": "first", "access_token": "old-at", "refresh_token": "old-rt"} for _ in range(2)]
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(module["_refresh_account_once"], accounts[0], lambda message: None)
+                self.assertTrue(entered.wait(5))
+                second = executor.submit(module["_refresh_account_once"], accounts[1], lambda message: None)
+                release.set()
+                self.assertTrue(first.result(timeout=5))
+                self.assertTrue(second.result(timeout=5))
+            self.assertEqual(["old-rt"], calls)
+            self.assertEqual([("new-at", "new-rt")] * 2,
+                             [(account["access_token"], account["refresh_token"]) for account in accounts])
+
+    def test_401_reuses_credentials_rotated_by_another_executor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            path.write_text(json.dumps({"first": {"access_token": "new-at", "refresh_token": "new-rt"}}), encoding="utf-8")
+            refresh = mock.Mock()
+            module = load_functions("_refresh_account_once", os=os, json=json, time=time, REFRESH_STORE=str(path),
+                                    refresh_one=refresh, _rebuild_token_file=mock.Mock())
+            account = {"note": "first", "access_token": "old-at", "refresh_token": "old-rt"}
+            self.assertTrue(module["_refresh_account_once"](account, lambda message: None))
+            self.assertEqual(("new-at", "new-rt"), (account["access_token"], account["refresh_token"]))
+            refresh.assert_not_called()
+
+    def test_401_merges_changes_during_refresh_and_rejects_same_account_conflict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokens.json"
+            original = {"first": {"access_token": "old-at", "refresh_token": "old-rt", "extra": "old"},
+                        "second": {"refresh_token": "second-old"}}
+            for conflict in (False, True):
+                with self.subTest(conflict=conflict):
+                    path.write_text(json.dumps(original), encoding="utf-8")
+                    def refresh(rt, at):
+                        other = json.loads(path.read_text(encoding="utf-8"))
+                        other["second"]["refresh_token"] = "second-new"
+                        other["first"]["extra"] = "changed"
+                        if conflict:
+                            other["first"]["refresh_token"] = "external-rt"
+                        path.write_text(json.dumps(other), encoding="utf-8")
+                        return "new-at", "new-rt"
+                    module = load_functions("_refresh_account_once", os=os, json=json, time=time,
+                        REFRESH_STORE=str(path), refresh_one=refresh, _rebuild_token_file=mock.Mock())
+                    account = {"note": "first", "refresh_token": "old-rt"}
+                    if conflict:
+                        with self.assertRaises(RuntimeError):
+                            module["_refresh_account_once"](account, lambda message: None)
+                        copies = list(Path(temp_dir).glob("tokens.json.tmp-*"))
+                        self.assertEqual("new-rt", json.loads(copies[0].read_text(encoding="utf-8"))["first"]["refresh_token"])
+                    else:
+                        self.assertTrue(module["_refresh_account_once"](account, lambda message: None))
+                    saved = json.loads(path.read_text(encoding="utf-8"))
+                    self.assertEqual("second-new", saved["second"]["refresh_token"])
+                    self.assertEqual("changed", saved["first"]["extra"])
+                    self.assertEqual("external-rt" if conflict else "new-rt", saved["first"]["refresh_token"])
 
     def test_refresh_one_sends_cn_header_subset_and_empty_body(self):
         session = FakeSession([FakeResponse(payload={
