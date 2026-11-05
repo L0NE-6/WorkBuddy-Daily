@@ -44,6 +44,8 @@ def assignment_value(name):
 
 def load_functions(*names, **globals_):
     namespace = {"__builtins__": __builtins__, **globals_}
+    if set(names) & {"interpret_failure", "run_account"}:
+        names = ("is_unapproved_channel", *names)
     if set(names) & {"_bootstrap_store", "refresh_all", "auto_refresh", "_refresh_account_once", "load_accounts"}:
         names = ("_token_store_lock", "_write_refresh_recovery", "_save_refresh_store", "_load_refresh_store", *names)
         namespace.update(contextmanager=contextlib.contextmanager, threading=threading,

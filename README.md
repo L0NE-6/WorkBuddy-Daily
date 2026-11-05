@@ -82,6 +82,7 @@
 ```bash
 python workbuddy_intl_daily.py                      # 探测 + 领取 + 活跃（上报 / 保活 / 网页会话）
 python workbuddy_intl_daily.py --no-keepalive       # 只探测、领取与上报，不发保活对话与网页会话
+python workbuddy_intl_daily.py --report-only        # 只做 /v2/report 活跃上报，不探测/领取任务或奖励
 python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 ```
 
@@ -95,8 +96,9 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 > ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
 >
 > 🚫 每个国际版账号在刷新 RT 和写操作前会先做一次只读状态预检；命中 `11140 / request illegal` 时明确标记为账号受限并结束该账号本轮，不继续刷新或重试。
+> 命中 `11-128 / Illegal API invocation from an unapproved channel` 时按请求内容/渠道指纹拦截处理，不刷新 Token、不重试；国内与国际版均会给出明确分类。
 > ℹ️ 保活对话出现 `HTTP 403` 通常是当前免费模型无权限，**不是账号风控**；真正的账号受限以 `11140 / request illegal` 为准，预检会直接报「账号受限」。
-> 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
+> 带上 `refresh_token` 时脚本会自动续期，并通过线程锁 + 跨进程文件锁、锁内 CAS 与原子替换写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
 > 活动未开放属于正常状态，不会当成失败；签到成功与活跃结果分开报告，任一发失败都不会把签到判成失败。
 > 活动未开启但活跃上报 / 网页会话成功时，会按「今日活跃已完成」报告（积分由上游异步发放）。
 
@@ -211,7 +213,7 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 4. **60 天无活动**：GitHub 会自动停用长期无活动仓库的 `schedule`；手动运行一次或 push 一个 commit 可重新激活。
 5. **cron 是 UTC**：北京时间要减 8 小时，例如 `17 23 * * *` 是北京时间次日 07:17。
 6. **看 Actions 记录**：如果只有 `workflow_dispatch` 记录、没有 `schedule` 记录，基本就是上面 1/2/3/4 之一，不是脚本问题。
-7. **schedule 是 best-effort**：GitHub 官方不保证准点，整点前后高负载时可能延迟数分钟到数小时，甚至跳过；v3.38 默认已避开整点，但仍不能保证准点。需要精确时间请用 `workflow_dispatch` 或外部调度触发。
+7. **schedule 是 best-effort**：GitHub 官方不保证准点，整点前后高负载时可能延迟数分钟到数小时，甚至跳过；v3.39 默认已避开整点，但仍不能保证准点。需要精确时间请用 `workflow_dispatch` 或外部调度触发。
 
 ---
 
@@ -660,7 +662,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v39`（2026-11-05，文档发行版）· **脚本版本**：`v3.38`
+- **当前发布版**：`v40`（2026-11-05，任务快照与国际版并发保护）· **脚本版本**：`v3.39`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 

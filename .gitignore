@@ -3,9 +3,12 @@ wb_refresh_tokens.json
 wb_refresh_tokens.json.tmp-*
 wb_refresh_tokens.json.lock
 WORKBUDDY_ACCESS_TOKEN.txt
+WORKBUDDY_INTL_ACCESS_TOKEN.txt
 wb_login_result.json
 wb_intl_login_result.json
 wb_intl_tokens.json
+wb_intl_tokens.json.tmp-*
+wb_intl_tokens.json.lock
 workbuddy_activity_state.json
 workbuddy_benefit_state.json
 workbuddy_benefit_state.json.tmp
