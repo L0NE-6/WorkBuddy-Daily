@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.39
+🌱 WorkBuddy Daily - 全能签到脚本 v3.40
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -2263,7 +2263,7 @@ def t_sign(s, uid, nick, log, status_out=None):
     """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）
 
     先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误
-    （网络/5xx）有界重试，但空 200、业务失败或没有 credit 的响应不再写成成功。
+    （网络/5xx）有界重试；credit_delayed=true 会明确记为待入账，不当领取失败。
 
     `status_out` 为调用方传入的 dict，用于回传签到结论供通知策略判断：
       checked_in   True=今天确实已签（含幂等命中「今天已签到」）
@@ -2318,11 +2318,17 @@ def t_sign(s, uid, nick, log, status_out=None):
     claim_data = claim_payload.get("data") or {}
     message = str(claim_payload.get("msg") or "").strip()
     message_lower = message.lower()
-    if _api_code_ok(claim_code) and claim_data.get("credit") is not None:
+    credit = claim_data.get("credit")
+    credit_delayed = claim_data.get("credit_delayed") is True
+    if _api_code_ok(claim_code) and (credit is not None or credit_delayed):
         fresh = _checkin_status(s)
         pending = fresh and fresh.get("today_checked_in") not in (True, 1)
-        log("   ✅签到成功 +%s积分%s%s" % (
-            claim_data.get("credit"), _checkin_tail(s),
+        if credit is not None:
+            reward_text = "+%s积分" % credit
+        else:
+            reward_text = "积分待入账（credit_delayed=true）"
+        log("   ✅签到成功 %s%s%s" % (
+            reward_text, _checkin_tail(s),
             "（状态稍后刷新）" if pending else ""))
         if status_out is not None:
             status_out["checked_in"] = True

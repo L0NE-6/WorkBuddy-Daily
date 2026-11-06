@@ -213,7 +213,7 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 4. **60 天无活动**：GitHub 会自动停用长期无活动仓库的 `schedule`；手动运行一次或 push 一个 commit 可重新激活。
 5. **cron 是 UTC**：北京时间要减 8 小时，例如 `17 23 * * *` 是北京时间次日 07:17。
 6. **看 Actions 记录**：如果只有 `workflow_dispatch` 记录、没有 `schedule` 记录，基本就是上面 1/2/3/4 之一，不是脚本问题。
-7. **schedule 是 best-effort**：GitHub 官方不保证准点，整点前后高负载时可能延迟数分钟到数小时，甚至跳过；v3.39 默认已避开整点，但仍不能保证准点。需要精确时间请用 `workflow_dispatch` 或外部调度触发。
+7. **schedule 是 best-effort**：GitHub 官方不保证准点，整点前后高负载时可能延迟数分钟到数小时，甚至跳过；v3.40 默认已避开整点，但仍不能保证准点。需要精确时间请用 `workflow_dispatch` 或外部调度触发。
 
 ---
 
@@ -501,6 +501,8 @@ python daily_forward.py daily.log --wx
 
 > 🔥 国内版签到后会补发一条 `chat_request_send` 活跃事件，并以成长热力图 `score > 0` 确认真正计分。HTTP 200 但当天仍为 0 时，默认补一次真实对话再回读；仍未计分则不写本地完成标记，下轮继续重试。
 >
+> 💤 签到回执出现 `credit_delayed=true` 时按“积分待入账”处理，不再当成缺少奖励；签到连签仍读取 `streak_days`，不会与成长热力墙的活跃连签混用。
+>
 > 🎯 专家体验任务：`WorkBuddy_Valorant` 与 `expert_use_*` 族都走真实对话、召唤和 `actual_use(mode:LOCAL)` 链；市场按职业名分页搜索后必须用 `expert_id` 精确落位，昵称和职业名分别写入 `name / expertTitle`。任务 `jump_url` 里的合法官方专家深链可安全覆盖内置 ID，未来新增的 `expert_use_*` code 也能自动解析。
 >
 > 🎁 领奖按任务进度扫描，`progress.current >= progress.target` 即补领，不依赖可能延迟或回滚的 `accept_status`。
@@ -662,7 +664,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v40`（2026-11-05，任务快照与国际版并发保护）· **脚本版本**：`v3.39`
+- **当前发布版**：`v41`（2026-11-07，延迟积分状态识别）· **脚本版本**：`v3.40`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 

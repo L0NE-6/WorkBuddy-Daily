@@ -220,6 +220,39 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("签到未确认", " ".join(logs))
         self.assertNotIn("签到成功", " ".join(logs))
 
+    def test_sign_credit_delayed_is_success_not_missing_credit(self):
+        calls = []
+
+        def api_retry(session, method, url, **kwargs):
+            calls.append(url)
+            if url.endswith("checkin-activity-status"):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"active": True, "today_checked_in": False},
+                })
+            return FakeResponse(payload={
+                "code": 0,
+                "data": {"credit_delayed": True, "is_streak_day": True},
+            })
+
+        module = load_functions(
+            "_api_code_ok", "t_sign",
+            api_retry=api_retry,
+            BASE="https://example.test",
+            is_enterprise_denial=lambda status, payload: False,
+            _checkin_status=lambda session: {"today_checked_in": True},
+            _checkin_tail=lambda session: "（签到连签3天）",
+            t_daily_activity=lambda *args: calls.append("daily-activity"),
+        )
+        logs = []
+        state = {}
+        module["t_sign"](object(), "u1", "nick", logs.append, state)
+        text = " ".join(logs)
+        self.assertIn("签到成功", text)
+        self.assertIn("积分待入账", text)
+        self.assertNotIn("回执缺少 credit", text)
+        self.assertTrue(state.get("checked_in"))
+
     def test_sign_10001_requires_fresh_checked_in_state(self):
         fresh_states = [{}, {"today_checked_in": True}]
 
