@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.40
+🌱 WorkBuddy Daily - 全能签到脚本 v3.41
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -1214,20 +1214,43 @@ def interpret_failure(st, r_json):
 
 
 def is_account_restricted(status_code, payload):
-    """WorkBuddy 账号级风控：11140 / request illegal，不得当成登录态过期。"""
-    code = payload.get("code") if isinstance(payload, dict) else None
-    blob = (
-        json.dumps(payload, ensure_ascii=False)
-        if isinstance(payload, (dict, list))
-        else str(payload or "")
-    ).lower()
-    if code in (11140, "11140"):
-        return True
-    markers = (
-        "11140", "account restricted", "request illegal",
-        "账号受限", "账号被限制", "账户受限",
+    """WorkBuddy 账号级风控：必须同时命中 11140 和明确的账号限制文案。
+
+    同一业务码也会承载模型级限流，且正文里可能只是在讨论这些关键词。这里只读
+    结构化错误字段，不扫描任意响应正文，避免把正文示例误判成账号受限。
+    """
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(payload, dict):
+        return False
+    code = payload.get("code")
+    if code not in (11140, "11140"):
+        return False
+    message = " ".join(
+        str(payload.get(key) or "")
+        for key in ("msg", "message", "displayMsg", "displayTips")
+    ).strip().lower()
+    if not message:
+        return False
+    rate_limit_markers = (
+        "rate-limiting", "rate limiting", "rate limit",
+        "too many requests", "usage limit", "请求过于频繁", "限流",
     )
-    return int(status_code or 0) == 403 and any(marker in blob for marker in markers)
+    if any(marker in message for marker in rate_limit_markers):
+        return False
+    restriction_markers = (
+        "request illegal",
+        "account restricted", "account is restricted",
+        "account has been restricted", "restricted account",
+        "account illegal", "unusual activity",
+        "账号受限", "账号被限制", "账号存在异常行为", "账号异常", "账号非法",
+        "账户受限", "账户被限制", "账户存在异常行为", "账户异常", "账户非法",
+        "已被限制使用",
+    )
+    return any(marker in message for marker in restriction_markers)
 
 
 def is_unapproved_channel(status_code, payload):
@@ -2818,15 +2841,19 @@ def t_lottery(s, uid, nick, log):
         log("   🎰抽奖异常: %s" % str(e)[:50])
 
 
-def t_blindbox(s, uid, nick, log):
-    """盲盒：能量足够就开（每次10能量，最多开5次）"""
+def t_blindbox(s, uid, nick, log, travel_state=None):
+    """盲盒：仅在旅行状态已确认 idle 时开（每次10能量，最多5次）。"""
+    state = (travel_state or {}).get("state") if isinstance(travel_state, dict) else ""
+    if state != "idle":
+        log("   📦盲盒: 旅行状态%s，跳过" % (state or "未知"))
+        return 0
     try:
         q = s.get(BASE + "/v2/activity/growth/buddy/quota", timeout=20, verify=False).json()
         qd = q.get("data", {})
         affordable = qd.get("affordable", 0)
         if not affordable or affordable <= 0:
             log("   📦盲盒: 能量不足 (%s/10)" % qd.get("balance", "?"))
-            return
+            return 0
         n = min(affordable, 5)
         got = []
         for _ in range(n):
@@ -2841,8 +2868,10 @@ def t_blindbox(s, uid, nick, log):
                 break
             time.sleep(1.5)
         log("   📦盲盒: %s" % ("、".join(got) if got else "开启失败"))
+        return len(got)
     except Exception as e:
         log("   📦盲盒异常: %s" % str(e)[:50])
+        return 0
 
 
 def t_buddy_info(s, uid, nick, log):
@@ -2857,26 +2886,43 @@ def t_buddy_info(s, uid, nick, log):
         pass
 
 
-def t_travel(s, uid, nick, log):
-    """派猫猫旅行：到达领礼物 / 旅行中等待 / 空闲出发（幂等状态机）"""
+def _read_travel_status(s, log):
+    """读取并校验旅行状态；未知状态返回 None，调用方不得继续开盒或派出。"""
+    st = s.get(BASE + "/v2/activity/growth/buddy/travel/status",
+               timeout=20, verify=False).json()
+    if not _api_code_ok(st.get("code")):
+        log("   🐾旅行: 状态获取失败")
+        return None
+    data = st.get("data") or {}
+    state = str(data.get("state") or "").strip().lower()
+    if state not in ("idle", "traveling", "arrived"):
+        log("   🐾旅行: 状态无法识别(%s)，跳过盲盒与派出" % (state or "空"))
+        return None
+    return data, state
+
+
+def _travel_observe(s, uid, nick, log, claim_arrived):
+    """读取旅行状态；启用旅行时领取 arrived 礼物并回读确认 idle。"""
     try:
         vis = s.get(BASE + "/v2/activity/growth/buddy/visible", timeout=20, verify=False).json()
         if _api_code_ok(vis.get("code")):
-            vd = vis.get("data", {})
+            vd = vis.get("data") or {}
             if not vd.get("buddy_visible", True) or not vd.get("has_buddy", True):
-                log("   🐾旅行: 无Buddy，跳过")
-                return
-        st = s.get(BASE + "/v2/activity/growth/buddy/travel/status", timeout=20, verify=False).json()
-        if not _api_code_ok(st.get("code")):
-            log("   🐾旅行: 状态获取失败")
-            return
-        sd = st.get("data", {})
-        state = sd.get("state", "idle")
+                log("   🐾旅行: 无Buddy，跳过盲盒与派出")
+                return {"state": "no_buddy"}
+        observed = _read_travel_status(s, log)
+        if observed is None:
+            return None
+        sd, state = observed
         if state == "arrived":
+            if not claim_arrived:
+                log("   🐾旅行: 已到达但礼物尚未领取，跳过盲盒")
+                return {"state": "arrived", "daily_limit_reached": bool(
+                    sd.get("daily_limit_reached"))}
             record_id = sd.get("record_id")
             if record_id in (None, "", 0):
                 log("   🐾旅行: 已到达但状态缺少 record_id，本轮不领奖也不重新派出")
-                return
+                return None
             claim_response = s.post(
                 BASE + "/v2/activity/growth/buddy/travel/claim",
                 json={"record_id": record_id}, timeout=20, verify=False)
@@ -2892,28 +2938,81 @@ def t_travel(s, uid, nick, log):
             else:
                 log("   🐾旅行: 领取未确认 %s" % str(
                     rr.get("msg") or "HTTP %s" % claim_response.status_code)[:60])
-                return
+                return None
+            observed = _read_travel_status(s, log)
+            if observed is None:
+                return None
+            sd, state = observed
+            if state != "idle":
+                log("   🐾旅行: 领取后状态仍为 %s，跳过盲盒与派出" % state)
+                return {"state": state, "daily_limit_reached": bool(
+                    sd.get("daily_limit_reached"))}
         if state == "traveling":
             remain = max(0, (sd.get("arrive_at", 0) - sd.get("server_now", 0)) // 60)
             log("   🐾旅行: 旅行中，约%s分钟后到达" % remain)
-            return
-        if sd.get("daily_limit_reached"):
-            log("   🐾旅行: 今日次数已用尽")
-            return
+            return {"state": "traveling"}
+        return {"state": "idle",
+                "daily_limit_reached": bool(sd.get("daily_limit_reached"))}
+    except Exception as e:
+        log("   🐾旅行异常: %s" % str(e)[:50])
+        return None
+
+
+def t_travel_prepare(s, uid, nick, log):
+    """旅行前置：处理 arrived 礼物，并仅在回读确认 idle 后允许开盒/派出。"""
+    return _travel_observe(s, uid, nick, log, claim_arrived=True)
+
+
+def t_travel_probe(s, uid, nick, log):
+    """旅行禁用但盲盒启用时，只读探测；arrived 不领奖且不允许开盒。"""
+    return _travel_observe(s, uid, nick, log, claim_arrived=False)
+
+
+def t_travel_depart(s, uid, nick, log, travel_state=None):
+    """在旅行状态已确认 idle 且今日次数未用尽时派出。"""
+    if (not isinstance(travel_state, dict)
+            or travel_state.get("state") != "idle"):
+        return False
+    if travel_state.get("daily_limit_reached"):
+        log("   🐾旅行: 今日次数已用尽")
+        return False
+    try:
         cfg = s.get(BASE + "/v2/activity/growth/buddy/travel/config", timeout=20, verify=False).json()
-        locs = cfg.get("data", {}).get("locations", [])
+        locs = (cfg.get("data") or {}).get("locations", [])
         if not locs:
             log("   🐾旅行: 无目的地")
-            return
+            return False
         rr = s.post(BASE + "/v2/activity/growth/buddy/travel/depart",
                     json={"location_id": locs[0].get("id")}, timeout=20, verify=False).json()
         if rr.get("code") == 0:
             remain = max(0, (rr.get("data", {}).get("arrive_at", 0) - rr.get("data", {}).get("server_now", 0)) // 3600)
             log("   🐾旅行: ✅已出发，约%s小时后到达（下次运行自动领取）" % remain)
+            return True
         else:
             log("   🐾旅行: 出发失败 %s" % str(rr.get("msg", ""))[:40])
+            return False
     except Exception as e:
         log("   🐾旅行异常: %s" % str(e)[:50])
+        return False
+
+
+def t_travel(s, uid, nick, log):
+    """兼容旧调用：完成旅行前置后，满足条件时直接派出。"""
+    travel_state = t_travel_prepare(s, uid, nick, log)
+    return t_travel_depart(s, uid, nick, log, travel_state=travel_state)
+
+
+def t_travel_blindbox_cycle(s, uid, nick, log, do_travel=True, do_blindbox=True):
+    """固定顺序：旅行礼物/状态 → 盲盒 → 旅行派出。"""
+    travel_state = (
+        t_travel_prepare(s, uid, nick, log)
+        if do_travel else t_travel_probe(s, uid, nick, log)
+    )
+    if do_blindbox:
+        t_blindbox(s, uid, nick, log, travel_state=travel_state)
+    if do_travel:
+        t_travel_depart(s, uid, nick, log, travel_state=travel_state)
+    return travel_state
 
 
 def t_redeem(s, uid, nick, log, streak_days=None):
@@ -5248,9 +5347,18 @@ def run_account(idx, acc, do_desktop):
     # 否则今天任务发的能量要等到下一轮才可见（盲盒会误报能量不足）。
     claim_ready_tasks(s, log)
     _run("徽章", ["badges"], lambda: t_badges(s, uid, nick, log))
-    _run("盲盒", ["blindbox"], lambda: t_blindbox(s, uid, nick, log))
     _run("Buddy 信息", ["buddy_info"], lambda: t_buddy_info(s, uid, nick, log))
-    _run("派猫猫旅行", ["travel"], lambda: t_travel(s, uid, nick, log))
+    if want("travel") or want("blindbox"):
+        try:
+            t_travel_blindbox_cycle(
+                s, uid, nick, log,
+                do_travel=want("travel"), do_blindbox=want("blindbox"))
+        except Exception as e:
+            log("   ⚠️旅行/盲盒异常: %s" % str(e)[:80])
+        if REPORT_GAP > 0:
+            time.sleep(REPORT_GAP)
+    else:
+        log("   ⏭️ 旅行/盲盒: 按配置跳过")
     streak_days_for_redeem = streak.get("days")
     makeup_days = _run("补签", ["makeup"], lambda: t_makeup(s, uid, nick, log))
     if makeup_days is not None:

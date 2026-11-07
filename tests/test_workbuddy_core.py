@@ -998,16 +998,246 @@ class CoreBehaviorTests(unittest.TestCase):
                 "code": 0,
                 "data": {"reward_credit": 30},
             }),
+            FakeResponse(payload={
+                "code": 0,
+                "data": {"state": "idle", "daily_limit_reached": True},
+            }),
         ]
         session = FakeSession(response_queue)
         module = load_functions(
-            "_api_code_ok", "_dig", "t_travel", BASE="https://example.test")
+            "_api_code_ok", "_dig", "_read_travel_status", "_travel_observe",
+            "t_travel_prepare", "t_travel_depart", "t_travel",
+            BASE="https://example.test")
         logs = []
         module["t_travel"](session, "u1", "nick", logs.append)
         claim_call = [call for call in session.calls
                       if call[1].endswith("/buddy/travel/claim")][0]
         self.assertEqual({"record_id": "record-42"}, claim_call[2]["json"])
         self.assertIn("+30积分", " ".join(logs))
+
+    def test_travel_blindbox_cycle_claims_before_opening_and_departs_last(self):
+        class Session:
+            def __init__(self):
+                self.state = "arrived"
+                self.opens = 0
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                path = url.split("/v2/activity/growth", 1)[1]
+                self.calls.append(("GET", path))
+                if path == "/buddy/visible":
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"has_buddy": True, "buddy_visible": True}})
+                if path == "/buddy/travel/status":
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {
+                            "state": self.state,
+                            "record_id": "record-1",
+                            "daily_limit_reached": False,
+                            "arrive_at": 0,
+                            "server_now": 0,
+                        },
+                    })
+                if path == "/buddy/quota":
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"balance": 30, "affordable": 3}})
+                if path == "/buddy/travel/config":
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"locations": [{"id": "loc-1", "name": "公园"}]},
+                    })
+                raise AssertionError("unexpected GET: " + path)
+
+            def post(self, url, **kwargs):
+                path = url.split("/v2/activity/growth", 1)[1]
+                self.calls.append(("POST", path))
+                if path == "/buddy/travel/claim":
+                    self.state = "idle"
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"reward_credit": 30}})
+                if path == "/buddy/open":
+                    self.opens += 1
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"results": [{
+                            "instance": {"name": "道具", "rarity": "R"}}]},
+                    })
+                if path == "/buddy/travel/depart":
+                    self.state = "traveling"
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"arrive_at": 3600, "server_now": 0},
+                    })
+                raise AssertionError("unexpected POST: " + path)
+
+        module = load_functions(
+            "_api_code_ok", "_dig", "_read_travel_status", "_travel_observe",
+            "t_travel_prepare", "t_travel_probe", "t_travel_depart",
+            "t_blindbox", "t_travel_blindbox_cycle",
+            BASE="https://example.test",
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+        )
+        session = Session()
+        logs = []
+        module["t_travel_blindbox_cycle"](
+            session, "u1", "nick", logs.append,
+            do_travel=True, do_blindbox=True)
+
+        claim_index = session.calls.index(("POST", "/buddy/travel/claim"))
+        status_indexes = [
+            i for i, call in enumerate(session.calls)
+            if call == ("GET", "/buddy/travel/status")
+        ]
+        quota_index = session.calls.index(("GET", "/buddy/quota"))
+        depart_index = session.calls.index(("POST", "/buddy/travel/depart"))
+        first_open_index = session.calls.index(("POST", "/buddy/open"))
+
+        self.assertEqual(2, len(status_indexes))
+        self.assertLess(claim_index, status_indexes[1])
+        self.assertLess(status_indexes[1], quota_index)
+        self.assertLess(quota_index, first_open_index)
+        self.assertLess(first_open_index, depart_index)
+        self.assertEqual(3, session.opens)
+        self.assertEqual("traveling", session.state)
+
+    def test_blindbox_opens_zero_three_or_five_times_after_idle(self):
+        class Session:
+            def __init__(self, affordable):
+                self.affordable = affordable
+                self.opens = 0
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                path = url.split("/v2/activity/growth", 1)[1]
+                self.calls.append(("GET", path))
+                if path == "/buddy/visible":
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"has_buddy": True, "buddy_visible": True}})
+                if path == "/buddy/travel/status":
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"state": "idle", "daily_limit_reached": True},
+                    })
+                if path == "/buddy/quota":
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {
+                            "balance": self.affordable * 10,
+                            "affordable": self.affordable,
+                        },
+                    })
+                raise AssertionError("unexpected GET: " + path)
+
+            def post(self, url, **kwargs):
+                path = url.split("/v2/activity/growth", 1)[1]
+                self.calls.append(("POST", path))
+                if path == "/buddy/open":
+                    self.opens += 1
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"results": [{
+                            "instance": {"name": "道具", "rarity": "R"}}]},
+                    })
+                raise AssertionError("unexpected POST: " + path)
+
+        module = load_functions(
+            "_api_code_ok", "_dig", "_read_travel_status", "_travel_observe",
+            "t_travel_prepare", "t_travel_probe", "t_travel_depart",
+            "t_blindbox", "t_travel_blindbox_cycle",
+            BASE="https://example.test",
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+        )
+        for affordable, expected in ((0, 0), (3, 3), (9, 5)):
+            with self.subTest(affordable=affordable):
+                session = Session(affordable)
+                module["t_travel_blindbox_cycle"](
+                    session, "u1", "nick", lambda message: None,
+                    do_travel=False, do_blindbox=True)
+                self.assertEqual(expected, session.opens)
+                self.assertFalse(any(
+                    path == "/buddy/travel/depart"
+                    for _, path in session.calls))
+
+    def test_travel_blindbox_cycle_blocks_unsafe_travel_states(self):
+        class Session:
+            def __init__(self, state, claim_ok=True, state_after_claim="idle"):
+                self.state = state
+                self.claim_ok = claim_ok
+                self.state_after_claim = state_after_claim
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                path = url.split("/v2/activity/growth", 1)[1]
+                self.calls.append(("GET", path))
+                if path == "/buddy/visible":
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"has_buddy": True, "buddy_visible": True}})
+                if path == "/buddy/travel/status":
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {
+                            "state": self.state,
+                            "record_id": "record-1",
+                            "daily_limit_reached": False,
+                            "arrive_at": 0,
+                            "server_now": 0,
+                        },
+                    })
+                if path == "/buddy/quota":
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"balance": 90, "affordable": 9}})
+                if path == "/buddy/travel/config":
+                    raise AssertionError("unsafe state must not read depart config")
+                raise AssertionError("unexpected GET: " + path)
+
+            def post(self, url, **kwargs):
+                path = url.split("/v2/activity/growth", 1)[1]
+                self.calls.append(("POST", path))
+                if path == "/buddy/travel/claim":
+                    if not self.claim_ok:
+                        return FakeResponse(500, {"code": 500, "msg": "claim failed"})
+                    self.state = self.state_after_claim
+                    return FakeResponse(payload={
+                        "code": 0, "data": {"reward_credit": 30}})
+                if path == "/buddy/open":
+                    raise AssertionError("unsafe state must not open blind box")
+                if path == "/buddy/travel/depart":
+                    raise AssertionError("unsafe state must not depart")
+                raise AssertionError("unexpected POST: " + path)
+
+        module = load_functions(
+            "_api_code_ok", "_dig", "_read_travel_status", "_travel_observe",
+            "t_travel_prepare", "t_travel_probe", "t_travel_depart",
+            "t_blindbox", "t_travel_blindbox_cycle",
+            BASE="https://example.test",
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+        )
+        cases = (
+            ("traveling", True, "idle"),
+            ("arrived", False, "idle"),
+            ("", True, "idle"),
+            ("unexpected", True, "idle"),
+            ("arrived", True, "traveling"),
+        )
+        for state, claim_ok, state_after_claim in cases:
+            with self.subTest(
+                    state=state, claim_ok=claim_ok,
+                    state_after_claim=state_after_claim):
+                session = Session(state, claim_ok, state_after_claim)
+                module["t_travel_blindbox_cycle"](
+                    session, "u1", "nick", lambda message: None,
+                    do_travel=True, do_blindbox=True)
+                paths = [path for _, path in session.calls]
+                self.assertNotIn("/buddy/open", paths)
+                self.assertNotIn("/buddy/travel/config", paths)
+                self.assertNotIn("/buddy/travel/depart", paths)
 
     def test_webchat_success_stops_and_failure_deletes(self):
         module = load_functions(
@@ -1380,19 +1610,47 @@ class CoreBehaviorTests(unittest.TestCase):
     def test_workbuddy_11140_is_account_restricted_not_token_expiry(self):
         module = load_functions(
             "interpret_failure", "is_account_restricted", json=json)
-        description, skip = module["interpret_failure"](
-            403, {"code": 11140, "msg": "request illegal"})
+        positive_cases = (
+            (403, {"code": 11140, "msg": "request illegal"}),
+            (403, {"code": "11140", "message":
+                   "Your account shows unusual activity and has been restricted."}),
+            (403, '{"code":11140,"msg":"账号存在异常行为，已被限制使用"}'),
+            (403, {"code": 11140, "displayMsg": "账户存在异常行为"}),
+            (403, {"code": 11140, "displayMsg": "账户非法，已被限制使用"}),
+        )
+        for status, payload in positive_cases:
+            with self.subTest(payload=payload):
+                self.assertTrue(module["is_account_restricted"](status, payload))
+        description, skip = module["interpret_failure"](*positive_cases[0])
         self.assertTrue(skip)
         self.assertIn("账号受限", description)
         self.assertNotIn("Token", description)
-        self.assertTrue(module["is_account_restricted"](
-            403, {"msg": "account restricted"}))
-        self.assertTrue(module["is_account_restricted"](
-            403, "<html><title>11140 request illegal</title></html>"))
         self.assertFalse(module["is_account_restricted"](
             401, {"msg": "token expired"}))
         self.assertTrue(module["interpret_failure"](
             401, {"msg": "token expired"})[1])
+
+    def test_workbuddy_11140_rate_limit_and_body_examples_are_not_restricted(self):
+        module = load_functions(
+            "interpret_failure", "is_account_restricted", json=json)
+        negative_cases = (
+            (429, {"code": 11140, "msg":
+                   "The model provider is rate-limiting requests."}),
+            (429, {"code": 11140, "msg": "too many requests"}),
+            (403, {"code": 50400, "msg": "account restricted"}),
+            (403, {"msg": "request illegal"}),
+            (403, {"code": 11140, "msg": "normal",
+                   "data": {"content": "code=11140 request illegal"}}),
+            (403, "<html><title>11140 request illegal</title></html>"),
+        )
+        for status, payload in negative_cases:
+            with self.subTest(payload=payload):
+                self.assertFalse(module["is_account_restricted"](status, payload))
+        description, skip = module["interpret_failure"](
+            429, {"code": 11140,
+                  "msg": "The model provider is rate-limiting requests."})
+        self.assertFalse(skip)
+        self.assertNotIn("账号受限", description)
 
     def test_local_expert_flow_uses_real_chat_and_local_events(self):
         states = [("accepted", 0, 1), ("completed", 1, 1), ("completed", 1, 1)]
