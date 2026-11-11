@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.41
+🌱 WorkBuddy Daily - 全能签到脚本 v3.42
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -38,6 +38,8 @@
    python workbuddy_daily.py               全流程：续期 → 查询 → 任务 → 领奖
    python workbuddy_daily.py --refresh     仅刷新所有账号 Token
    python workbuddy_daily.py --query       仅查询积分/用量/成长
+   python workbuddy_daily.py --sign-retry-only
+                                           只处理已到点的签到补签，不跑完整任务
    python workbuddy_daily.py --no-desktop  跳过桌面任务（非 Windows 默认走指纹上报）
    python workbuddy_daily.py --only 3      只跑第 3 个账号
    python workbuddy_daily.py --gap 2.0     写动作间隔秒数（默认 1.5，最低 1.0）
@@ -78,6 +80,8 @@
    WORKBUDDY_MAKEUP_MAX_PER_RUN
                              【可选】每轮最多补签几张（默认 1，最多 10）
    WORKBUDDY_BENEFIT_STATE   【可选】补偿/礼包本地期次防重文件路径
+   WORKBUDDY_SIGN_RETRY      【可选】签到瞬时失败补签状态文件路径
+                             （默认 workbuddy_sign_retry.json）
    WORKBUDDY_STATE_DIR       【可选】状态文件目录（令牌库 / AT 文本 / 补偿防重）
                              不设＝脚本同级目录（默认）；容器或脚本目录会被
                              重装/升级覆盖时建议指向持久目录
@@ -169,6 +173,8 @@
    · locked 任务：任务行 locked=true（未到上线时间）直接跳过并给出解锁日，不空跑不误判
    · mp 对话 id：conversationId=UUID v4；requestId/traceId/rootRequestId=32 hex 毫秒前缀
    · 瞬时错误重试：每日签到/余额/用量对网络与 5xx 做 2s/4s 有界重试，业务错误不重试
+     仅签到 `HTTP 500 + code=10001 + 稍后重试` 会跨进程排队，从首次失败起
+     第 10/40 分钟由 `--sign-retry-only` 补跑；每次先查官方状态，已签即清队列
    · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / 国内 realm），
      把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
@@ -515,6 +521,8 @@ STATE_DIR = _state_dir()
 REFRESH_STORE = os.path.join(STATE_DIR, "wb_refresh_tokens.json")
 TOKEN_FILE = os.path.join(STATE_DIR, "WORKBUDDY_ACCESS_TOKEN.txt")
 BENEFIT_STATE_FILE = os.path.join(STATE_DIR, "workbuddy_benefit_state.json")
+SIGN_RETRY_FILE = os.path.join(STATE_DIR, "workbuddy_sign_retry.json")
+SIGN_RETRY_DELAYS = (10 * 60, 40 * 60)
 
 
 # 固定锁文件不可删除：所有进程必须锁住同一个文件，而不是原子替换的状态文件。
@@ -1104,6 +1112,7 @@ MP_TARGET_WAIT_ROUNDS = 30
 MP_TARGET_WAIT_SECONDS = 2.5
 QUERY_ONLY = "--query" in sys.argv
 NO_DESKTOP = "--no-desktop" in sys.argv
+SIGN_RETRY_ONLY = "--sign-retry-only" in sys.argv
 if "--gap" in sys.argv:
     try:
         WRITE_GAP = max(1.0, float(sys.argv[sys.argv.index("--gap") + 1]))
@@ -2282,15 +2291,148 @@ def t_daily_activity(s, uid, nick, log):
         log("   🔥每日活跃: 已上报")
 
 
-def t_sign(s, uid, nick, log, status_out=None):
+def _sign_retry_path():
+    return (os.environ.get("WORKBUDDY_SIGN_RETRY", "").strip()
+            or SIGN_RETRY_FILE)
+
+
+def _sign_retry_key(uid):
+    """用 UID 哈希隔离账号，状态文件不落手机号、UID 或凭据。"""
+    return hashlib.sha256(
+        ("workbuddy-sign-retry:%s" % str(uid or "")).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _sign_retry_load():
+    path = _sign_retry_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return path, data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return path, {}
+
+
+def _sign_retry_save(path, data):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = "%s.tmp-%s" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _sign_retry_record(uid, now=None):
+    """返回该账号当日补签记录及是否到点；跨日旧状态视为不存在。"""
+    _path, data = _sign_retry_load()
+    record = data.get(_sign_retry_key(uid))
+    if not isinstance(record, dict):
+        return None, False
+    today = beijing_today().isoformat()
+    if str(record.get("day") or "") != today:
+        return None, False
+    now = int(time.time() if now is None else now)
+    return dict(record), now >= _as_int(record.get("next_at"))
+
+
+def _schedule_sign_retry(uid, now=None):
+    """从首次失败时刻起排队 10/40 分钟两轮；第三轮失败即清空并标记耗尽。"""
+    path, data = _sign_retry_load()
+    today = beijing_today().isoformat()
+    data = {
+        key: value for key, value in data.items()
+        if isinstance(value, dict) and str(value.get("day") or "") == today
+    }
+    key = _sign_retry_key(uid)
+    record = data.get(key)
+    now = int(time.time() if now is None else now)
+    if not isinstance(record, dict):
+        record = {"day": today, "started_at": now, "round": 0}
+    round_index = _as_int(record.get("round"))
+    if round_index >= len(SIGN_RETRY_DELAYS):
+        data.pop(key, None)
+        _sign_retry_save(path, data)
+        return None, True
+    record["day"] = today
+    record["started_at"] = _as_int(record.get("started_at"), now)
+    record["round"] = round_index + 1
+    record["next_at"] = record["started_at"] + SIGN_RETRY_DELAYS[round_index]
+    record["last_failure_at"] = now
+    data[key] = record
+    _sign_retry_save(path, data)
+    return dict(record), False
+
+
+def _sign_retry_clear(uid):
+    path, data = _sign_retry_load()
+    key = _sign_retry_key(uid)
+    if key not in data:
+        return False
+    data.pop(key, None)
+    _sign_retry_save(path, data)
+    return True
+
+
+def _is_retryable_checkin_failure(status_code, payload):
+    """只认生产实测的 500 + code=10001 + 明确“稍后重试”。"""
+    if _as_int(status_code, -1) != 500 or not isinstance(payload, dict):
+        return False
+    if _as_int(payload.get("code"), -1) != 10001:
+        return False
+    message = str(payload.get("msg") or payload.get("message") or "")
+    return "稍后重试" in message
+
+
+def t_sign(s, uid, nick, log, status_out=None, retry_only=False):
     """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）
 
     先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误
     （网络/5xx）有界重试；credit_delayed=true 会明确记为待入账，不当领取失败。
+    只有 HTTP 500 + code=10001 + “稍后重试”进入跨进程补签队列；retry_only
+    只处理已到点的补签状态，不执行主动任务或每日活跃。
 
     `status_out` 为调用方传入的 dict，用于回传签到结论供通知策略判断：
       checked_in   True=今天确实已签（含幂等命中「今天已签到」）
     """
+    now = int(time.time())
+    retry_record, retry_due = _sign_retry_record(uid, now)
+    if retry_only and retry_record is None:
+        log("   ℹ️签到补签: 无待处理状态，跳过")
+        return
+    if retry_record is not None and not retry_due:
+        next_at = _as_int(retry_record.get("next_at"))
+        wait_minutes = max(1, int(math.ceil(max(0, next_at - now) / 60.0)))
+        log("   ⏳签到补签: 已排队，约 %d 分钟后到点" % wait_minutes)
+        if status_out is not None:
+            status_out["pending_retry"] = True
+            status_out["retry_at"] = next_at
+            status_out["retry_round"] = _as_int(retry_record.get("round"))
+        return
+    retry_attempt = retry_record is not None
+
+    def clear_retry_state():
+        if not retry_attempt:
+            return
+        try:
+            _sign_retry_clear(uid)
+        except Exception as exc:
+            log("   ⚠️签到补签状态清理失败: %s" % str(exc)[:60])
+
+    def after_sign():
+        if not retry_only:
+            t_daily_activity(s, uid, nick, log)
+
     try:
         status_response = api_retry(
             s, "POST", BASE + "/v2/billing/meter/checkin-activity-status",
@@ -2300,6 +2442,7 @@ def t_sign(s, uid, nick, log, status_out=None):
         log("   ❌签到状态查询失败（网络/5xx 重试后仍失败）: %s" % str(exc)[:60])
         return
     if is_enterprise_denial(status_response.status_code, status_payload):
+        clear_retry_state()
         log("   🏢 企业版账号：上游不支持签到与个人成长任务（本次跳过）")
         return
     if not (200 <= status_response.status_code < 300):
@@ -2313,14 +2456,16 @@ def t_sign(s, uid, nick, log, status_out=None):
     status_data = status_payload.get("data") or {}
     if status_data.get("active") is False:
         name = str(status_data.get("activity_name") or "").strip()
+        clear_retry_state()
         log("   ℹ️签到活动未开启%s" % ("（%s）" % name if name else ""))
-        t_daily_activity(s, uid, nick, log)
+        after_sign()
         return
     if status_data.get("today_checked_in") in (True, 1):
+        clear_retry_state()
         log("   ✅签到: 今天已签到%s" % _checkin_tail(s))
         if status_out is not None:
             status_out["checked_in"] = True
-        t_daily_activity(s, uid, nick, log)
+        after_sign()
         return
 
     try:
@@ -2332,9 +2477,31 @@ def t_sign(s, uid, nick, log, status_out=None):
         log("   ❌签到请求失败（网络/5xx 重试后仍失败）: %s" % str(exc)[:60])
         return
     if is_enterprise_denial(claim_response.status_code, claim_payload):
+        clear_retry_state()
         log("   🏢 企业版账号：上游不支持签到与个人成长任务（本次跳过）")
         return
+    if _is_retryable_checkin_failure(
+            claim_response.status_code, claim_payload):
+        try:
+            record, exhausted = _schedule_sign_retry(
+                uid, now=int(time.time()))
+        except Exception as exc:
+            log("   ❌签到瞬时失败，且补签状态落盘失败: %s" % str(exc)[:60])
+            return
+        if status_out is not None:
+            status_out["pending_retry"] = bool(record)
+            status_out["retry_exhausted"] = exhausted
+            if record:
+                status_out["retry_at"] = record.get("next_at")
+                status_out["retry_round"] = record.get("round")
+        if record:
+            log("   ⏳签到瞬时失败（500/10001），已排第 %s 轮补签" % (
+                record.get("round")))
+        else:
+            log("   ⚠️签到两轮补签均遇瞬时失败，今日补签队列已结束")
+        return
     if not (200 <= claim_response.status_code < 300):
+        clear_retry_state()
         log("   ❌签到失败: HTTP %s" % claim_response.status_code)
         return
     claim_code = claim_payload.get("code")
@@ -2353,31 +2520,35 @@ def t_sign(s, uid, nick, log, status_out=None):
         log("   ✅签到成功 %s%s%s" % (
             reward_text, _checkin_tail(s),
             "（状态稍后刷新）" if pending else ""))
+        clear_retry_state()
         if status_out is not None:
             status_out["checked_in"] = True
-        t_daily_activity(s, uid, nick, log)
+        after_sign()
         return
     if _api_code_ok(claim_code) and any(
             marker in message_lower for marker in ("已签到", "已领取", "already")):
+        clear_retry_state()
         log("   ✅签到: %s%s" % (message, _checkin_tail(s)))
         if status_out is not None:
             status_out["checked_in"] = True
-        t_daily_activity(s, uid, nick, log)
+        after_sign()
         return
     if claim_code in (10001, "10001"):
+        clear_retry_state()
         fresh = _checkin_status(s)
         if fresh.get("today_checked_in") in (True, 1):
             log("   ✅签到: 状态回读确认今日已签%s" % _checkin_tail(s))
             if status_out is not None:
                 status_out["checked_in"] = True
-            t_daily_activity(s, uid, nick, log)
+            after_sign()
             return
         log("   ❌签到未确认: code 10001 但状态未显示今日已签 %s" % message[:60])
-        t_daily_activity(s, uid, nick, log)
+        after_sign()
         return
+    clear_retry_state()
     log("   ❌签到未确认: %s" % (
         message or ("code %s，回执缺少 credit" % claim_code))[:80])
-    t_daily_activity(s, uid, nick, log)
+    after_sign()
 
 
 def t_accept_all(s, uid, nick, log, rows=None, done_codes=None):
@@ -5745,6 +5916,48 @@ def send_notify_all(title, content):
     return any(results)
 
 
+def run_sign_retry_only():
+    """外部 cron 专用：只处理到点的签到补签状态，不执行完整任务套件。"""
+    print("╔════════════════════════════════════════╗")
+    print("║ ⏳ WorkBuddy 签到补签                  ║")
+    print("╚════════════════════════════════════════╝")
+    print("👥 待检查账号数: %d" % len(ACCOUNTS))
+    processed = 0
+    for idx, acc in enumerate(ACCOUNTS, 1):
+        tag = "账号%d" % idx
+        tok = acc.get("access_token", "")
+        if not tok:
+            print("[%s][%s] ❌ AT 为空，跳过" % (time.strftime("%H:%M:%S"), tag))
+            continue
+        uid = uid_of(tok)
+        record, due = _sign_retry_record(uid)
+        if record is None:
+            continue
+        if not due:
+            continue
+
+        def log(message, _tag=tag):
+            print("[%s][%s] %s" % (
+                time.strftime("%H:%M:%S"), _tag, message))
+
+        state = {}
+        processed += 1
+        try:
+            t_sign(
+                new_api(tok), uid, nickname_of(tok), log, state,
+                retry_only=True)
+        except Exception as exc:
+            log("❌补签异常: %s" % str(exc)[:100])
+            continue
+        if state.get("checked_in"):
+            log("✅补签完成")
+        elif state.get("retry_exhausted"):
+            log("⚠️今日补签队列已耗尽")
+        elif state.get("pending_retry"):
+            log("⏳仍待下一轮补签")
+    print("🏁 本次补签检查完成，触发账号数: %d" % processed)
+
+
 def main():
     if "--refresh" in sys.argv:
         print("╔═══════════════════════════════════╗")
@@ -5756,6 +5969,9 @@ def main():
         else:
             print("⚠️ 无账号续期（检查 wb_refresh_tokens.json 是否存在）")
         print("📄 WORKBUDDY_ACCESS_TOKEN.txt 已同步更新")
+        return
+    if SIGN_RETRY_ONLY:
+        run_sign_retry_only()
         return
     print("╔════════════════════════════════════════╗")
     print("║ 🌱 WorkBuddy 全能脚本                  ║")

@@ -212,6 +212,9 @@ class CoreBehaviorTests(unittest.TestCase):
             _checkin_status=lambda session: {"today_checked_in": False},
             _checkin_tail=lambda session: "（签到连签2天）",
             t_daily_activity=lambda *args: calls.append("daily-activity"),
+            _sign_retry_record=lambda uid, now=None: (None, False),
+            _is_retryable_checkin_failure=lambda status, payload: False,
+            time=time,
         )
         logs = []
         module["t_sign"](object(), "u1", "nick", logs.append)
@@ -243,6 +246,9 @@ class CoreBehaviorTests(unittest.TestCase):
             _checkin_status=lambda session: {"today_checked_in": True},
             _checkin_tail=lambda session: "（签到连签3天）",
             t_daily_activity=lambda *args: calls.append("daily-activity"),
+            _sign_retry_record=lambda uid, now=None: (None, False),
+            _is_retryable_checkin_failure=lambda status, payload: False,
+            time=time,
         )
         logs = []
         state = {}
@@ -275,6 +281,9 @@ class CoreBehaviorTests(unittest.TestCase):
             _checkin_status=lambda session: fresh_states.pop(0),
             _checkin_tail=lambda session: "",
             t_daily_activity=lambda *args: None,
+            _sign_retry_record=lambda uid, now=None: (None, False),
+            _is_retryable_checkin_failure=lambda status, payload: False,
+            time=time,
         )
         first_logs = []
         module["t_sign"](object(), "u1", "nick", first_logs.append)
@@ -2260,11 +2269,204 @@ class CoreBehaviorTests(unittest.TestCase):
             _checkin_tail=lambda s: "",
             t_daily_activity=lambda *a: None,
             _checkin_status=lambda s: {"today_checked_in": True},
+            _sign_retry_record=lambda uid, now=None: (None, False),
+            time=time,
         )
         state = {}
         with contextlib.redirect_stdout(io.StringIO()):
             module["t_sign"](Session(), "uid", "nick", lambda m: None, state)
         self.assertTrue(state.get("checked_in"))
+
+
+class SignRetryStateMachineTests(unittest.TestCase):
+    def _sign_module(self, temp_dir, now=1_000):
+        fake_time = types.SimpleNamespace(
+            time=lambda: now,
+            strftime=time.strftime,
+            gmtime=time.gmtime,
+        )
+        return load_functions(
+            "_as_int",
+            "_sign_retry_path",
+            "_sign_retry_key",
+            "_sign_retry_load",
+            "_sign_retry_save",
+            "_sign_retry_record",
+            "_schedule_sign_retry",
+            "_sign_retry_clear",
+            "_is_retryable_checkin_failure",
+            "t_sign",
+            "run_sign_retry_only",
+            os=os,
+            json=json,
+            hashlib=hashlib,
+            math=math,
+            time=fake_time,
+            STATE_DIR=str(temp_dir),
+            SIGN_RETRY_FILE=str(Path(temp_dir) / "workbuddy_sign_retry.json"),
+            SIGN_RETRY_DELAYS=(10 * 60, 40 * 60),
+            beijing_today=lambda: __import__("datetime").date(2026, 11, 11),
+            BASE="https://example.test",
+            _api_code_ok=lambda code: code in (0, 200, "0", "200"),
+            is_enterprise_denial=lambda status, payload: False,
+            _checkin_tail=lambda session: "",
+            _checkin_status=lambda session: {"today_checked_in": False},
+            t_daily_activity=lambda *args: None,
+        )
+
+    def test_exact_transient_sign_failure_predicate(self):
+        module = load_functions(
+            "_as_int", "_is_retryable_checkin_failure", time=time)
+        check = module["_is_retryable_checkin_failure"]
+        self.assertTrue(check(500, {
+            "code": 10001, "msg": "签到失败，请稍后重试"}))
+        self.assertTrue(check("500", {
+            "code": "10001", "message": "请求处理中，请稍后重试"}))
+        self.assertFalse(check(400, {
+            "code": 10001, "msg": "企业账号不支持该操作"}))
+        self.assertFalse(check(429, {
+            "code": 10001, "msg": "请求处理中，请稍后重试"}))
+        self.assertFalse(check(500, {
+            "code": 10000, "msg": "签到失败，请稍后重试"}))
+        self.assertFalse(check(500, {
+            "code": 10001, "msg": "其他业务错误"}))
+
+    def test_retry_schedule_uses_first_failure_offsets_and_expires_after_two_retries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir)
+            first, exhausted = module["_schedule_sign_retry"]("uid-secret", now=1_000)
+            self.assertFalse(exhausted)
+            self.assertEqual(1, first["round"])
+            self.assertEqual(1_600, first["next_at"])
+
+            second, exhausted = module["_schedule_sign_retry"]("uid-secret", now=1_600)
+            self.assertFalse(exhausted)
+            self.assertEqual(2, second["round"])
+            self.assertEqual(3_400, second["next_at"])
+
+            third, exhausted = module["_schedule_sign_retry"]("uid-secret", now=3_400)
+            self.assertIsNone(third)
+            self.assertTrue(exhausted)
+            state_path = Path(temp_dir) / "workbuddy_sign_retry.json"
+            self.assertEqual({}, json.loads(state_path.read_text(encoding="utf-8")))
+            self.assertNotIn("uid-secret", state_path.read_text(encoding="utf-8"))
+
+    def test_not_due_retry_cron_performs_zero_upstream_requests(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_000)
+            module["_schedule_sign_retry"]("uid-1", now=1_000)
+            calls = []
+            module["api_retry"] = lambda *args, **kwargs: calls.append(args)
+            state = {}
+            logs = []
+            module["t_sign"](
+                object(), "uid-1", "nick", logs.append, state, retry_only=True)
+            self.assertEqual([], calls)
+            self.assertTrue(state.get("pending_retry"))
+            self.assertEqual(1_600, state.get("retry_at"))
+            self.assertIn("已排队", " ".join(logs))
+
+    def test_retry_state_is_isolated_per_uid_and_expires_across_day(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_000)
+            module["_schedule_sign_retry"]("uid-1", now=1_000)
+            module["_schedule_sign_retry"]("uid-2", now=1_000)
+            state_path = Path(temp_dir) / "workbuddy_sign_retry.json"
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(2, len(saved))
+            self.assertNotIn("uid-1", state_path.read_text(encoding="utf-8"))
+
+            module["beijing_today"] = lambda: __import__("datetime").date(2026, 11, 12)
+            record, due = module["_sign_retry_record"]("uid-1", now=1_600)
+            self.assertIsNone(record)
+            self.assertFalse(due)
+
+    def test_due_retry_checks_status_and_clears_when_already_signed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_600)
+            module["_schedule_sign_retry"]("uid-1", now=1_000)
+            calls = []
+
+            def api_retry(session, method, url, **kwargs):
+                calls.append(url)
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"active": True, "today_checked_in": True},
+                })
+
+            module["api_retry"] = api_retry
+            state = {}
+            module["t_sign"](
+                object(), "uid-1", "nick", lambda message: None,
+                state, retry_only=True)
+            self.assertEqual(1, len(calls))
+            self.assertTrue(calls[0].endswith("checkin-activity-status"))
+            self.assertTrue(state.get("checked_in"))
+            state_path = Path(temp_dir) / "workbuddy_sign_retry.json"
+            self.assertEqual({}, json.loads(state_path.read_text(encoding="utf-8")))
+
+    def test_exact_initial_500_10001_schedules_retry_but_other_errors_do_not(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_000)
+            responses = [
+                FakeResponse(payload={
+                    "code": 0,
+                    "data": {"active": True, "today_checked_in": False},
+                }),
+                FakeResponse(500, {
+                    "code": 10001, "msg": "签到失败，请稍后重试"}),
+            ]
+            module["api_retry"] = lambda *args, **kwargs: responses.pop(0)
+            state = {}
+            logs = []
+            module["t_sign"](
+                object(), "uid-1", "nick", logs.append, state)
+            self.assertTrue(state.get("pending_retry"))
+            self.assertEqual(1, state.get("retry_round"))
+            self.assertEqual(1_600, state.get("retry_at"))
+            self.assertIn("已排第 1 轮补签", " ".join(logs))
+
+    def test_retry_state_write_failure_is_reported_not_faked(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_000)
+            responses = [
+                FakeResponse(payload={
+                    "code": 0,
+                    "data": {"active": True, "today_checked_in": False},
+                }),
+                FakeResponse(500, {
+                    "code": 10001, "msg": "签到失败，请稍后重试"}),
+            ]
+            module["api_retry"] = lambda *args, **kwargs: responses.pop(0)
+            module["_sign_retry_save"] = mock.Mock(side_effect=OSError("disk full"))
+            state = {}
+            logs = []
+            module["t_sign"](
+                object(), "uid-1", "nick", logs.append, state)
+            self.assertFalse(state.get("pending_retry"))
+            self.assertIn("补签状态落盘失败", " ".join(logs))
+
+    def test_retry_only_runner_never_calls_full_account_flow(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_600)
+            calls = []
+            module["ACCOUNTS"] = [
+                {"access_token": "token-1", "note": "account-1"},
+                {"access_token": "token-2", "note": "account-2"},
+            ]
+            module["uid_of"] = lambda token: token
+            module["nickname_of"] = lambda token: token
+            module["new_api"] = lambda token: ("session", token)
+            module["_sign_retry_record"] = lambda uid, now=None: (
+                ({"day": "2026-11-11", "round": 1, "next_at": 1_600}, True)
+                if uid == "token-1" else (None, False)
+            )
+            module["t_sign"] = (
+                lambda session, uid, nick, log, state, retry_only=False:
+                calls.append((session, uid, retry_only)))
+            with contextlib.redirect_stdout(io.StringIO()):
+                module["run_sign_retry_only"]()
+            self.assertEqual([(("session", "token-1"), "token-1", True)], calls)
 
 
 class TaskDispatchGuardTests(unittest.TestCase):

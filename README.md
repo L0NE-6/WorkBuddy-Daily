@@ -160,6 +160,7 @@ pip3 install requests
 | `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，合成活跃事件未点亮热力图时是否补一次真实对话（默认 `1`） |
 | `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径 |
 | `WORKBUDDY_STATE_DIR` | ⬜ | 可选，状态文件目录（`wb_refresh_tokens.json` / `WORKBUDDY_ACCESS_TOKEN.txt` / 补偿防重等）。不设＝脚本同级目录（原行为）；容器部署、脚本目录只读，或升级会覆盖脚本目录时，指向持久目录可避免轮换后的令牌库被一并替换 |
+| `WORKBUDDY_SIGN_RETRY` | ⬜ | 可选，签到瞬时失败补签状态文件路径（默认 `workbuddy_sign_retry.json`）；仅保存 UID 哈希 |
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
@@ -309,6 +310,7 @@ python workbuddy_login.py
 python workbuddy_daily.py                # 全流程：续期 → 查询 → 任务 → 领奖
 python workbuddy_daily.py --refresh      # 仅刷新所有账号 Token
 python workbuddy_daily.py --query        # 仅查询积分/用量/成长
+python workbuddy_daily.py --sign-retry-only # 只处理已到点的签到补签
 python workbuddy_daily.py --no-desktop   # 跳过桌面任务（非 Windows 默认走指纹上报，此参数可彻底跳过）
 python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，最低 1.0）
@@ -370,6 +372,7 @@ python daily_forward.py daily.log --wx
 | `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，热力图仍为 0 时是否补一次真实对话（默认开启） |
 | `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径（默认 `workbuddy_benefit_state.json`） |
 | `WORKBUDDY_STATE_DIR` | ⬜ | 可选，状态文件目录（令牌库 `wb_refresh_tokens.json`、`WORKBUDDY_ACCESS_TOKEN.txt`、补偿防重等的默认落点）。不设＝脚本同级目录（原行为）；容器部署、脚本目录只读，或升级会覆盖脚本目录时，指向持久目录可避免轮换后的令牌库被一并替换 |
+| `WORKBUDDY_SIGN_RETRY` | ⬜ | 可选，签到瞬时失败补签状态文件路径（默认 `workbuddy_sign_retry.json`）；仅保存 UID 哈希，不保存凭据或用户标识 |
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 🎛️ **子任务开关怎么用？** 任务完成后领到的积分有**一个月有效期**，一次全领完容易放过期。
@@ -499,6 +502,16 @@ python daily_forward.py daily.log --wx
 
 每日签到（先查 `/v2/billing/meter/checkin-activity-status`，活动期且今日未签时再调 `/v2/billing/meter/daily-checkin`）
 
+> ⏳ **分钟级补签队列**：只有签到领取明确返回 `HTTP 500 + code=10001 + “稍后重试”` 才写入本地补签状态。状态按 UID 哈希隔离，从首次失败时刻起在 **第 10 分钟、第 40 分钟**各补一次；每次先查官方签到状态，已签立即清队列。外部 cron 用 `python workbuddy_daily.py --sign-retry-only` 触发，只执行补签，不跑完整任务套件：
+>
+> ```bash
+> # 青龙本地时间；首次全流程后，9-10 点每 10 分钟检查一次补签队列
+> 0 9 * * *       task workbuddy_daily.py
+> 10-50/10 9-10 * * * task workbuddy_daily.py --sign-retry-only
+> ```
+>
+> `400 + 10001` 企业号拒绝、普通 `429`、`500 + code=10000` 或其他业务错误都不会进入该队列；不会用长 `sleep` 占住任务进程。
+>
 > 🔥 国内版签到后会补发一条 `chat_request_send` 活跃事件，并以成长热力图 `score > 0` 确认真正计分。HTTP 200 但当天仍为 0 时，默认补一次真实对话再回读；仍未计分则不写本地完成标记，下轮继续重试。
 >
 > 💤 签到回执出现 `credit_delayed=true` 时按“积分待入账”处理，不再当成缺少奖励；签到连签仍读取 `streak_days`，不会与成长热力墙的活跃连签混用。
@@ -556,7 +569,7 @@ python daily_forward.py daily.log --wx
 - **🎁 自动补领奖**：按 `progress.current >= progress.target` 扫描，已达标未领的任务会自动补领，不依赖可能延迟或回滚的 `accept_status`。
 - **📱 小程序协议对齐**：公共 base 使用 2.4.0，专家/灵感事件按官方发射点保留 2.2.8；`conversationId` 使用 UUID v4，`requestId` 使用 32 hex 毫秒前缀，不再携带项目缩写前缀。
 - **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，`target<=0` 时有界等待下发，不再按 1 猜测或冒领。
-- **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
+- **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试；只有签到 `500 + 10001 + 稍后重试` 会进入 10/40 分钟跨进程补签队列。
 - **📢 多渠道推送**：PushPlus、Bark、WxPusher、Server酱、企业微信、钉钉和**青龙面板默认通知**，配了哪个推哪个，互不影响。
   企业微信/钉钉只需一个 webhook；青龙用户连 webhook 都不用填——脚本自己从面板拿令牌调通知接口，**新版旧版都兼容**：
   · **青龙 2.18+**（不再写 auth.json）：配 `QL_CLIENT_ID` / `QL_CLIENT_SECRET`（应用授权，勾选 **system** 权限）→ `GET /open/auth/token` 换令牌 → `PUT /open/system/notify`；
@@ -664,7 +677,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v42`（2026-11-07，旅行与盲盒顺序、11140 精确分类）· **脚本版本**：`v3.41`
+- **当前发布版**：`v43`（2026-11-11，签到瞬时失败分钟级补签队列）· **脚本版本**：`v3.42`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 
