@@ -2446,6 +2446,60 @@ class SignRetryStateMachineTests(unittest.TestCase):
             self.assertFalse(state.get("pending_retry"))
             self.assertIn("补签状态落盘失败", " ".join(logs))
 
+    def test_due_retry_status_exception_advances_to_next_scheduled_round(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_600)
+            module["_schedule_sign_retry"]("uid-1", now=1_000)
+
+            def fail(*args, **kwargs):
+                raise RuntimeError("network down")
+
+            module["api_retry"] = fail
+            state = {}
+            module["t_sign"](
+                object(), "uid-1", "nick", lambda message: None,
+                state, retry_only=True)
+            self.assertTrue(state.get("pending_retry"))
+            self.assertEqual(2, state.get("retry_round"))
+            self.assertEqual(3_400, state.get("retry_at"))
+            saved = json.loads((Path(temp_dir) / "workbuddy_sign_retry.json")
+                               .read_text(encoding="utf-8"))
+            self.assertEqual(1, len(saved))
+            self.assertEqual(2, next(iter(saved.values()))["round"])
+
+    def test_due_retry_status_exception_on_second_round_exhausts_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=3_400)
+            module["_schedule_sign_retry"]("uid-1", now=1_000)
+            module["_schedule_sign_retry"]("uid-1", now=1_600)
+
+            def fail(*args, **kwargs):
+                raise RuntimeError("network down")
+
+            module["api_retry"] = fail
+            state = {}
+            module["t_sign"](
+                object(), "uid-1", "nick", lambda message: None,
+                state, retry_only=True)
+            self.assertTrue(state.get("retry_exhausted"))
+            self.assertFalse(state.get("pending_retry"))
+            self.assertEqual({}, json.loads(
+                (Path(temp_dir) / "workbuddy_sign_retry.json")
+                .read_text(encoding="utf-8")))
+
+    def test_due_retry_non_success_status_response_clears_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            module = self._sign_module(temp_dir, now=1_600)
+            module["_schedule_sign_retry"]("uid-1", now=1_000)
+            module["api_retry"] = lambda *args, **kwargs: FakeResponse(
+                403, {"code": 0, "data": {}})
+            module["t_sign"](
+                object(), "uid-1", "nick", lambda message: None, {},
+                retry_only=True)
+            self.assertEqual({}, json.loads(
+                (Path(temp_dir) / "workbuddy_sign_retry.json")
+                .read_text(encoding="utf-8")))
+
     def test_retry_only_runner_never_calls_full_account_flow(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             module = self._sign_module(temp_dir, now=1_600)

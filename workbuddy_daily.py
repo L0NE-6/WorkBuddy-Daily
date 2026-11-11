@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.42
+🌱 WorkBuddy Daily - 全能签到脚本 v3.43
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -240,6 +240,7 @@ TASK_NAME_CN = {
     "Expert_team_use_3": "召唤3次专家团",
     "first_buddy": "领取Buddy",
     "chat_5": "和AI聊天5次",
+    "skill_share": "分享技能给好友",
     "skill_1": "尝鲜热门技能",
     "expert_5": "召唤5次专家",
     "template_5": "使用5个模板",
@@ -2433,12 +2434,35 @@ def t_sign(s, uid, nick, log, status_out=None, retry_only=False):
         if not retry_only:
             t_daily_activity(s, uid, nick, log)
 
+    def handle_inconclusive_retry(reason):
+        """消费已到点的补签轮次，避免网络异常后每个 cron 重复请求。"""
+        if not retry_attempt:
+            return
+        try:
+            record, exhausted = _schedule_sign_retry(
+                uid, now=int(time.time()))
+        except Exception as exc:
+            log("   ❌签到补签%s，且状态落盘失败: %s" % (
+                reason, str(exc)[:60]))
+            return
+        if status_out is not None:
+            status_out["pending_retry"] = bool(record)
+            status_out["retry_exhausted"] = exhausted
+            if record:
+                status_out["retry_at"] = record.get("next_at")
+                status_out["retry_round"] = record.get("round")
+        if record:
+            log("   ⏳签到补签%s，已排下一轮" % reason)
+        else:
+            log("   ⚠️签到补签%s，两轮机会已用完" % reason)
+
     try:
         status_response = api_retry(
             s, "POST", BASE + "/v2/billing/meter/checkin-activity-status",
             body={}, retries=3, gap=2.0)
         status_payload = status_response.json() or {}
     except Exception as exc:
+        handle_inconclusive_retry("状态查询异常")
         log("   ❌签到状态查询失败（网络/5xx 重试后仍失败）: %s" % str(exc)[:60])
         return
     if is_enterprise_denial(status_response.status_code, status_payload):
@@ -2446,10 +2470,12 @@ def t_sign(s, uid, nick, log, status_out=None, retry_only=False):
         log("   🏢 企业版账号：上游不支持签到与个人成长任务（本次跳过）")
         return
     if not (200 <= status_response.status_code < 300):
+        clear_retry_state()
         log("   ❌签到状态查询失败: HTTP %s" % status_response.status_code)
         return
     status_code = status_payload.get("code")
     if status_code is not None and not _api_code_ok(status_code):
+        clear_retry_state()
         log("   ❌签到状态查询失败: %s" % str(
             status_payload.get("msg") or "code %s" % status_code)[:60])
         return
@@ -2474,6 +2500,7 @@ def t_sign(s, uid, nick, log, status_out=None, retry_only=False):
             body={}, retries=3, gap=2.0)
         claim_payload = claim_response.json() or {}
     except Exception as exc:
+        handle_inconclusive_retry("领取请求异常")
         log("   ❌签到请求失败（网络/5xx 重试后仍失败）: %s" % str(exc)[:60])
         return
     if is_enterprise_denial(claim_response.status_code, claim_payload):
