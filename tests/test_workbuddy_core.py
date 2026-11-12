@@ -306,15 +306,18 @@ class CoreBehaviorTests(unittest.TestCase):
                     "data": {"results": [{"status": "accepted"}]},
                 })
 
+        # 每轮 post 后读两次：第 1 次调用 4 读全空 → 失败；第 2 次调用末读落账 → 成功
         states = [
-            (None, None, None),
-            (None, None, None),
-            ("accepted", 0, 1),
+            (None, None, None), (None, None, None),
+            (None, None, None), (None, None, None),
+            (None, None, None), (None, None, None),
+            (None, None, None), ("accepted", 0, 1),
         ]
         module = load_functions(
             "_accept_with_verify",
             BASE="https://example.test",
             WRITE_GAP=0,
+            ACCEPT_SETTLE_GAP=0,
             prog=lambda session, code: states.pop(0),
             time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
         )
@@ -322,7 +325,66 @@ class CoreBehaviorTests(unittest.TestCase):
         logs = []
         self.assertFalse(module["_accept_with_verify"](session, "new_task", logs.append))
         self.assertTrue(module["_accept_with_verify"](session, "new_task", logs.append))
-        self.assertEqual(3, session.posts)
+        self.assertEqual(4, session.posts)
+
+    def test_accept_verify_treats_already_accepted_as_success(self):
+        """上游对已登记任务回 status=already_accepted，不能当成失败。"""
+
+        class Session:
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [{"task_code": "skill_share",
+                                          "status": "already_accepted"}]},
+                })
+
+        module = load_functions(
+            "_accept_with_verify",
+            BASE="https://example.test",
+            WRITE_GAP=0,
+            ACCEPT_SETTLE_GAP=0,
+            prog=lambda session, code: ("accepted", 0, 1),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+        logs = []
+        self.assertTrue(module["_accept_with_verify"](Session(), "skill_share", logs.append))
+        self.assertEqual([], logs)
+
+    def test_accept_all_survives_async_settle(self):
+        """批量 accept 回 accepted，但回读要等几秒才翻状态——不能判成未落账。"""
+
+        class Session:
+            def get(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"tasks": [{"task_code": "skill_share",
+                                        "accept_status": "not_accepted"}]},
+                })
+
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [{"task_code": "skill_share",
+                                          "status": "accepted"}]},
+                })
+
+        reads = iter([(None, None, None), ("not_accepted", None, None),
+                      ("accepted", 0, 1)])
+        module = load_functions(
+            "t_accept_all",
+            BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=3,
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+            prog=lambda session, code: next(reads),
+            ensure_first_buddy=lambda session, uid, nick, log: True,
+            _accept_with_verify=lambda session, code, log: False,
+        )
+        logs = []
+        module["t_accept_all"](Session(), "u1", "nick", logs.append)
+        text = " ".join(logs)
+        self.assertNotIn("未落账", text)
+        self.assertIn("全部登记生效", text)
 
     def test_accept_all_repairs_prerequisite_then_confirms_state(self):
         class Session:
@@ -348,6 +410,8 @@ class CoreBehaviorTests(unittest.TestCase):
         module = load_functions(
             "t_accept_all",
             BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=3,
             time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
             prog=lambda session, code: ("accepted", 0, 1),
             ensure_first_buddy=lambda session, uid, nick, log: True,
@@ -3198,7 +3262,7 @@ class CampaignTaskTests(unittest.TestCase):
                 return None
         return _Clock
 
-    def _harness(self, state, claims, fired, advance=True):
+    def _harness(self, state, claims, fired, advance=True, fail_kinds=()):
         """state: {campaign: {task: row}}；_fire 按调用推进度并写 completed_at。"""
         import copy
 
@@ -3207,8 +3271,8 @@ class CampaignTaskTests(unittest.TestCase):
 
         def fire(_s, _uid, _nick, spec, task, _log):
             fired.append((spec["code"], task["task"]))
-            if task.get("kind") == "app":
-                # 手机端 App 任务脚本不伪造事件
+            if task.get("kind") in fail_kinds:
+                # 触发失败（网络异常/会话建不起来）：本任务不推进度
                 return False
             row = state[spec["code"]][task["task"]]
             if not advance:
@@ -3228,6 +3292,8 @@ class CampaignTaskTests(unittest.TestCase):
             CAMPAIGN_SLOW_GAP=assignment_value("CAMPAIGN_SLOW_GAP"),
             CAMPAIGN_DESKTOP_WAIT=assignment_value("CAMPAIGN_DESKTOP_WAIT"),
             CAMPAIGN_DESKTOP_POLL=assignment_value("CAMPAIGN_DESKTOP_POLL"),
+            CAMPAIGN_APP_WAIT=assignment_value("CAMPAIGN_APP_WAIT"),
+            CAMPAIGN_APP_POLL=assignment_value("CAMPAIGN_APP_POLL"),
             want=lambda *codes: True,
             campaign_tasks=cam_tasks,
             _campaign_fire=fire,
@@ -3275,6 +3341,7 @@ class CampaignTaskTests(unittest.TestCase):
         self.assertIn(("campaign_reporter_2026", "skill_use"), fired)
         self.assertEqual(
             [("campaign_starbucks_2026", "ai_chat"), ("campaign_starbucks_2026", "expert"),
+             ("campaign_starbucks_2026", "app"),
              ("campaign_reporter_2026", "expert_chat"), ("campaign_reporter_2026", "skill_use"),
              ("campaign_reporter_2026", "desktop_same")],
             claims)
@@ -3291,16 +3358,24 @@ class CampaignTaskTests(unittest.TestCase):
         self.assertEqual([], fired)
         self.assertEqual(6, len(claims))
 
-    def test_manual_tasks_stay_unfinished_with_hint(self):
-        """app 不伪造事件：不领取、只留提示；desktop_same 一条事件即可点亮。"""
+    def test_desktop_and_app_tasks_are_automated(self):
+        """desktop_same 一条事件点亮，app 真跑一轮云端对话——两者都能自动领取。"""
         claims, fired, logs = [], [], []
         module = self._harness(self._blank_state(), claims, fired)
         module["t_campaigns"](object(), "uid", "nick", logs.append)
         self.assertIn(("campaign_reporter_2026", "desktop_same"), fired)
         self.assertIn(("campaign_reporter_2026", "desktop_same"), claims)
         self.assertIn(("campaign_starbucks_2026", "app"), fired)
+        self.assertIn(("campaign_starbucks_2026", "app"), claims)
+
+    def test_app_trigger_failure_stays_pending(self):
+        """app 会话建不起来时只提示，不假装成功、不领奖。"""
+        claims, fired, logs = [], [], []
+        module = self._harness(self._blank_state(), claims, fired, fail_kinds=("app",))
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertIn(("campaign_starbucks_2026", "app"), fired)
         self.assertNotIn(("campaign_starbucks_2026", "app"), claims)
-        self.assertTrue(any("尚未完成" in line and "App" in line for line in logs))
+        self.assertTrue(any("触发失败" in line and "App" in line for line in logs))
 
     def test_claimed_task_is_skipped(self):
         state = self._blank_state()
@@ -3542,6 +3617,44 @@ class CampaignEventShapeTests(unittest.TestCase):
         self.assertEqual("uid-1", headers["X-User-Id"])
         self.assertEqual("mp-weixin", headers["X-Client-Platform"])
         self.assertEqual("workbuddy-mp", headers["X-Client-Product"])
+
+    def test_app_headers_use_app_identity(self):
+        """app 任务必须用 App 身份头：服务端按 x-client-product 判来源。"""
+        module = load_functions("_campaign_app_headers")
+        headers = module["_campaign_app_headers"]("tok-123", "uid-9", "text/event-stream")
+        self.assertEqual("Bearer tok-123", headers["Authorization"])
+        self.assertEqual("uid-9", headers["X-User-Id"])
+        self.assertEqual("workbuddy-app", headers["X-Client-Product"])
+        self.assertEqual("android", headers["X-Client-Platform"])
+        self.assertEqual("text/event-stream", headers["Accept"])
+        self.assertIn("WorkBuddyApp/", headers["User-Agent"])
+
+    def test_app_machine_id_is_derived_not_hardcoded(self):
+        """设备号必须按账号派生：仓库里不留真实设备指纹，也不跨账号复用。"""
+        module = load_functions("_campaign_app_machine", hashlib=__import__("hashlib"))
+        machine = module["_campaign_app_machine"]
+        first = machine("uid-9")
+        self.assertEqual(first, machine("uid-9"))
+        self.assertNotEqual(first, machine("uid-10"))
+        self.assertEqual(8, len(first))
+        self.assertTrue(all(c in "0123456789abcdef" for c in first))
+        # 空账号也不能炸，且依然是 8 位
+        self.assertEqual(8, len(machine(None)))
+
+    def test_docs_contain_no_real_phone_numbers(self):
+        """公开文档/脚本里只允许示例号，不得出现接入过的真实账号。"""
+        import re as _re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        allowed = {"13800000000", "13800138000"}
+        pattern = _re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+        for name in ("CHANGELOG.md", "README.md", "workbuddy_daily.py"):
+            path = os.path.join(root, name)
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            found = set(pattern.findall(text)) - allowed
+            self.assertEqual(set(), found, "%s 含未脱敏号码: %s" % (name, sorted(found)))
 
 
 if __name__ == "__main__":

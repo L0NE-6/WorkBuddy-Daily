@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.48（2026-11-13）
+
+- 打通星巴克 `app`（原判定「必须真机」，已推翻）：判据是「agentos 云端会话真跑完一轮对话」，与手机型号、设备登录无关。脚本按 App 身份头（`X-Client-Product: workbuddy-app` / `X-Client-Platform: android` / `WorkBuddyApp/2.8.0`）建会话，再用一次 `POST {boxUrl}/acp/bootstrap?includeUserEcho=true` 把 `initialize + session/new + session/prompt` 一起提交，读到 `stopReason` 即收尾。
+- 整流链路只有 4 个请求：`viewed`（建进度行）→ `POST /v2/as/conversations/` → `acp/bootstrap` → `claim`；prompt 固定「你只需要回复"Hi"」，把模型生成压到最短。实测对话 10 秒内 `end_turn`，5 秒内判据落库。
+- 反证留档：补发埋点（`app_login` / `chat_request_send`，6 组信封）、网页 `webchat` 会话、APK 事件层复刻、客户端自造 `Acp-Connection-Id`（服务端 404 `connection not found`）、创建会话时 `conversationOrigin=workbuddy-app` 但不跑 ACP（会话卡 `CREATING`）全部不计数。
+- `campaign_starbucks_2026/app` 从「只提示」改为自动执行（`kind="app"` → `_campaign_app_chat`），新增 `CAMPAIGN_APP_*` 常量与 `_campaign_app_headers`；`t_campaigns` 对 `app`/`desktop` 统一「单发一次 + 长轮询」，不再重发。
+- 测试：`_harness` 支持 `fail_kinds` 模拟触发失败；新增 `test_desktop_and_app_tasks_are_automated`、`test_app_trigger_failure_stays_pending`、`test_app_headers_use_app_identity`；另加隐私回归 `test_docs_contain_no_real_phone_numbers`、`test_app_machine_id_is_derived_not_hardcoded`；全套 `180` 项通过。
+- 修复 `accept` 误判（线上日志实证）：上游对已登记任务回 `status="already_accepted"`（对已完成任务回 `error` + `task already completed`），旧实现只认 `status=="accepted"`，于是「批量接受 14 项 → 成功 14」之后又被判成「10 项未落账」，重试全部撞 `already_accepted` 记为失败，最终整条任务链（`skill_share`、`expert_use_*`、`expert_5`、`automation_1`…）被「接受任务失败，跳过」。现在以回读 `accept_status ∈ {accepted, completed, claimed}` 为准，并对批量接受加 3 次 × 2 秒落账等待（新增 `ACCEPT_SETTLE_GAP` / `ACCEPT_BATCH_SETTLE` / `ACCEPT_BATCH_TRIES`）。
+- 实测：两个测试账号（脱敏，记为账号 A / B）从 `app 0/1` → `1/1 completed → claimed`（各 +100 积分）；8 账号活动任务 6/6 全部可自动完成并领奖。
+
 ## v3.47（2026-11-12）
 
 - 新增小程序活动任务适配（`t_campaigns`）：星巴克协作 `campaign_starbucks_2026`（`ai_chat` ×3、`expert`）与记者节福利 `campaign_reporter_2026`（`expert_chat`、`skill_use`），判据走活动域 `/portal/activity/tasks`，进度/领奖/回读一体化。

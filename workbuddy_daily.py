@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.47
+🌱 WorkBuddy Daily - 全能签到脚本 v3.48
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -1109,6 +1109,9 @@ ONLY = int(sys.argv[sys.argv.index("--only") + 1]) - 1 if "--only" in sys.argv e
 if ONLY is not None:
     ACCOUNTS = [ACCOUNTS[ONLY]]
 WRITE_GAP = 1.5  # 写动作间隔秒数（--gap 可覆盖，最低 1.0）
+ACCEPT_SETTLE_GAP = 1.5  # accept 落账异步，回读重试间隔秒数
+ACCEPT_BATCH_SETTLE = 2.0  # 批量 accept 后首次回读前的等待
+ACCEPT_BATCH_TRIES = 3  # 批量回读次数（3 次 × 2s，覆盖服务端异步落账延迟）
 REPORT_GAP = 1.05  # 实际执行任务之间的统一间隔，避免连续任务触发上游软限流
 MP_CHAT_GAP = 45.0  # mp 对话事件“真人节奏”间隔秒数（上游实测 45s；--mp-gap / WORKBUDDY_MP_GAP 可覆盖）
 MP_TARGET_WAIT_ROUNDS = 30
@@ -2624,8 +2627,9 @@ def t_accept_all(s, uid, nick, log, rows=None, done_codes=None):
         for x in ((d2.get("data") or {}).get("results") or []):
             if isinstance(x, dict) and x.get("task_code"):
                 resp[x["task_code"]] = (x.get("status") or "", x.get("message") or "")
-        ok = [c for c in todo if resp.get(c, ("", ""))[0] == "accepted"]
-        bad = [(c, resp[c][0], resp[c][1]) for c in todo if c in resp and resp[c][0] != "accepted"]
+        ack = ("accepted", "already_accepted")
+        ok = [c for c in todo if resp.get(c, ("", ""))[0] in ack]
+        bad = [(c, resp[c][0], resp[c][1]) for c in todo if c in resp and resp[c][0] not in ack]
         nolog = [c for c in todo if c not in resp]
         log("   📋批量接受 %d 项 → 成功 %d / 未登记 %d%s" % (
             len(todo), len(ok), len(bad) + len(nolog),
@@ -2652,8 +2656,21 @@ def t_accept_all(s, uid, nick, log, rows=None, done_codes=None):
         else:
             log("      ⚠️ 前置「%s」脚本暂无法自动完成" % pcode)
     # ---- 2) 回读验证 + 逐个重试（上游存在 200+OK 但未落账的形态）----
-    time.sleep(2)
-    pending = [c for c in todo if prog(s, c)[0] in (None, "not_accepted")]
+    # 落账是异步的：批量 accept 回 accepted 后，任务列表要过几秒才翻状态。
+    # 旧实现只 sleep(2) 读一次，把还在途中的 10 项判成「未落账」，
+    # 重试又撞上 already_accepted 再判失败，整条任务链被误跳过。
+    time.sleep(ACCEPT_BATCH_SETTLE)
+    settled = ("accepted", "completed", "claimed")
+    pending = []
+    for c in todo:
+        ast = prog(s, c)[0]
+        for _ in range(ACCEPT_BATCH_TRIES - 1):
+            if ast in settled:
+                break
+            time.sleep(ACCEPT_BATCH_SETTLE)
+            ast = prog(s, c)[0]
+        if ast not in settled:
+            pending.append(c)
     if not pending:
         log("   ✅ 全部登记生效（%d 项）" % len(todo))
         return
@@ -4822,6 +4839,94 @@ def _campaign_desktop_same(s, uid, nick, spec, task, log):
 
 
 
+CAMPAIGN_APP_HOST = "https://copilot.tencent.com"
+CAMPAIGN_APP_BOOT = 120         # 一轮对话（含建沙箱）实测 10~40 秒
+CAMPAIGN_APP_WAIT = 30          # 对话结束后判据落库的轮询窗口
+CAMPAIGN_APP_POLL = 5
+CAMPAIGN_APP_PROMPT = '你只需要回复"Hi"'   # 判据只看「真跑完一轮」，让模型少生成
+
+
+def _campaign_app_machine(uid):
+    """按账号派生稳定的伪设备号（8 位十六进制）。
+
+    仓库里不留任何真实设备指纹：同账号每轮稳定，换账号即变，也不可反推设备。
+    """
+    seed = "workbuddy-app-machine:%s" % (uid or "")
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8]
+
+
+def _campaign_app_headers(token, uid, accept="application/json"):
+    """App 身份头：服务端按 x-client-product 判来源，缺了会被当成网页/桌面。"""
+    return {"Authorization": "Bearer " + (token or ""), "X-User-Id": uid,
+            "User-Agent": "WorkBuddyApp/2.8.0", "X-Client-Version": "2.8.0",
+            "X-Client-Product": "workbuddy-app", "X-Client-Platform": "android",
+            "Accept": accept}
+
+
+def _campaign_app_chat(s, uid, nick, log, prompt=None):
+    """app 任务：建会话 + 一次 ACP bootstrap 真跑完一轮对话（App 走的同一条路）。
+
+    判据是「云端会话真跑完一次对话」，补发埋点、网页会话都不计数。整条链路
+    只要 4 个请求：`POST /v2/as/conversations/` 建会话 → `POST {boxUrl}/acp/bootstrap`
+    把 initialize + session/new + session/prompt 一次带过去 → 读完流 → 外层领奖。
+    bootstrap 的响应头会下发 `Acp-Connection-Id`，所以不必先开 SSE 再握手，
+    也不接受客户端自己造的 id（会 404 connection not found）。
+    """
+    token = (s.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+    if not token:
+        log("      ✗ %s: 缺少 access_token" % "解锁 App 强大能力")
+        return False
+    s2 = requests.Session()
+    s2.trust_env = False
+    try:
+        r = s2.post(CAMPAIGN_APP_HOST + "/v2/as/conversations/",
+                    json={"name": "开始新对话", "conversationOrigin": "agents"},
+                    headers=_campaign_app_headers(token, uid), timeout=60, verify=False)
+        data = (r.json() or {}).get("data") or {}
+        sess = data.get("session") or {}
+        box, box_tok = sess.get("boxUrl") or "", sess.get("token") or ""
+        if not box or not box_tok:
+            log("      ✗ 建会话失败：HTTP %s %s" % (r.status_code, str(r.text)[:80]))
+            return False
+        info = {"ideType": "WorkBuddy_APP", "ideName": "app_cloud", "ideVersion": "2.8.0",
+                "extName": "WorkBuddy_APP", "extVersion": "2.8.0",
+                "machineId": _campaign_app_machine(uid), "userId": uid, "userNickname": nick}
+        meta = {"codebuddy.ai": {"telemetryClientInfo": info}}
+        span = uuid.uuid4().hex[:16]
+        body = {
+            "initialize": {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": 1, "clientCapabilities": {},
+                                      "clientInfo": {"name": "WorkBuddyApp", "version": "2.8.0"}}},
+            "sessionNew": {"jsonrpc": "2.0", "id": 2, "method": "session/new",
+                           "params": {"cwd": "/workspace", "mcpServers": [], "_meta": meta}},
+            "prompt": {"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                       "params": {"prompt": [{"type": "text",
+                                              "text": prompt or CAMPAIGN_APP_PROMPT}],
+                                  "_meta": meta}},
+        }
+        hdr = _campaign_app_headers(box_tok, uid, "application/json, text/event-stream")
+        hdr.update({"Content-Type": "application/json", "X-Span-Id": span,
+                    "X-Client-Request-Id": "sse_" + uuid.uuid4().hex[:10],
+                    "Traceparent": "00-%s-%s-01" % (uuid.uuid4().hex, span)})
+        rr = s2.post(box.rstrip("/") + "/acp/bootstrap?includeUserEcho=true", json=body,
+                     headers=hdr, stream=True, timeout=CAMPAIGN_APP_BOOT, verify=False)
+        if rr.status_code != 200 or not rr.headers.get("Acp-Connection-Id"):
+            log("      ✗ bootstrap 失败：HTTP %s" % rr.status_code)
+            return False
+        deadline = time.time() + CAMPAIGN_APP_BOOT
+        for line in rr.iter_lines(decode_unicode=True):
+            if line and '"stopReason"' in line:
+                break
+            if time.time() > deadline:
+                break
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log("      ✗ 对话异常：%s" % type(exc).__name__)
+        return False
+    finally:
+        s2.close()
+
+
 def _campaign_fire(s, uid, nick, spec, task, log):
     """按 kind 上报一次判据事件；返回是否已上报。"""
     kind = task.get("kind")
@@ -4829,8 +4934,7 @@ def _campaign_fire(s, uid, nick, spec, task, log):
     if kind == "desktop":
         return _campaign_desktop_same(s, uid, nick, spec, task, log)
     if kind == "app":
-        log("      ⚠️ %s: 需手机端 App 登录后与 AI 对话一次，脚本不伪造" % task["label"])
-        return False
+        return _campaign_app_chat(s, uid, nick, log)
     if kind == "chat":
         return mp_report(s, uid, nick, [mp_chat_event(uid, nick, None)],
                          env_extra=page) == 200
@@ -4859,8 +4963,8 @@ def t_campaigns(s, uid, nick, log):
 
     `desktop_same`（桌面端做同款）只上报一条桌面域 `playbook_prompt_send`
     （`id` 用产物目录名 `cnb-content-calendar`）即可点亮；`app`（手机端 App）
-    不能靠补发事件推进，需要真机登录，脚本只提示、不伪造。两者只要行到
-    completed，本函数都会自动领奖。
+    判据是「云端会话真跑完一次对话」，脚本按 App 口径建会话 + ACP 跑一轮，
+    不依赖真机。两者只要行到 completed，本函数都会自动领奖。
     """
     gained = 0
     for spec in CAMPAIGN_SPECS:
@@ -4892,20 +4996,17 @@ def t_campaigns(s, uid, nick, log):
                 _campaign_view(s, uid, camp, code)
             cur = row.get("progress") or 0
             kind = task.get("kind")
-            if kind == "app":
-                # 手机端 App 任务要真实登录 + 对话，脚本只提示，等真机完成后再补领。
+            if kind in ("app", "desktop"):
+                # app：真跑一轮云端对话；desktop：一条桌面域埋点。两者判据都是
+                # 异步落库，单发一次后长轮询，绝不重发（多发会被判异常）。
                 if not _campaign_fire(s, uid, nick, spec, task, log):
-                    log("      ⏳ %s: 尚未完成（%s/%s），完成后再跑本脚本会自动领奖"
-                        % (task["label"], cur, target))
+                    log("      ⚠️ %s: 触发失败，下轮重试" % task["label"])
                     continue
-            elif kind == "desktop":
-                # 一条桌面域事件即可，判据 5 秒内落库。
-                if not _campaign_fire(s, uid, nick, spec, task, log):
-                    log("      ⚠️ %s: 上报失败" % task["label"])
-                    continue
+                wait = CAMPAIGN_APP_WAIT if kind == "app" else CAMPAIGN_DESKTOP_WAIT
+                poll = CAMPAIGN_APP_POLL if kind == "app" else CAMPAIGN_DESKTOP_POLL
                 cur = _campaign_poll(s, uid, camp, code, target,
-                                     tries=max(2, CAMPAIGN_DESKTOP_WAIT // CAMPAIGN_DESKTOP_POLL),
-                                     gap=CAMPAIGN_DESKTOP_POLL, log=log)
+                                     tries=max(2, wait // poll),
+                                     gap=poll, log=log)
             else:
                 # 最多补发「还差几次」，不做额外重发：判据延迟时宁可交给下一轮，
                 # 也不对官方活动多发事件。
@@ -5971,7 +6072,16 @@ def report_web_event(s, uid, nick, event_code, page_url, element_id, element_nam
 
 
 def _accept_with_verify(s, code, log):
-    """accept 并验证登记生效（读 results[].status + 回读 accept_status）。"""
+    """accept 并验证登记生效（以回读 accept_status 为准）。
+
+    ⚠️ 两个历史坑（线上日志实证）：
+      1) 上游对**已登记**的任务返回 `status="already_accepted"`，这不是失败；
+         旧实现只认 `status == "accepted"`，导致 14 项全部接受成功却被判成
+         「未落账」，随后整轮任务（skill_share / expert_use_* 等）被跳过。
+      2) accept 的落账是异步的：接口立刻回 accepted，任务列表要过几秒才翻状态。
+         所以每轮 post 之后读两次（间隔 1.5s），任一次读到 settled 就算成功。
+    """
+    settled = ("accepted", "completed", "claimed")
     for attempt in (1, 2):
         r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
                    timeout=20, verify=False)
@@ -5982,11 +6092,11 @@ def _accept_with_verify(s, code, log):
             status = (results[0].get("status") or "") if results else (d.get("msg") or "")
         except Exception:
             pass
-        t = prog(s, code)
-        ast = t[0] if t else None
-        ok = (r.status_code == 200 and status == "accepted"
-              and ast in ("accepted", "completed", "claimed"))
-        if ok:
+        ast = prog(s, code)[0]
+        if r.status_code == 200 and ast not in settled:
+            time.sleep(ACCEPT_SETTLE_GAP)
+            ast = prog(s, code)[0]
+        if r.status_code == 200 and ast in settled:
             return True
         if attempt > 1:
             log("      ✗ %s: accept %s 回读=%s" % (code, status or "无返回", ast))

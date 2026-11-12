@@ -414,7 +414,7 @@ python daily_forward.py daily.log --wx
 
 ## 📦 任务清单
 
-> 单账号每轮按服务端下发逐项核对：**当前为 25 项 = 24 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **45 项**（云端 23 + 小程序 7 + PC 灵感 1 + 互动玩法 8 + 每日签到 1 + 小程序活动 5）。
+> 单账号每轮按服务端下发逐项核对：**当前为 25 项 = 24 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **45 项**（云端 23 + 小程序 7 + PC 灵感 1 + 互动玩法 8 + 每日签到 1 + 小程序活动 6）。
 >
 > 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注满 24 小时，脚本会检测并提示，不自动完成。
 >
@@ -487,7 +487,7 @@ python daily_forward.py daily.log --wx
 > 💡 小程序口径任务需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
 
-### 🎪 小程序活动任务（星巴克协作 / 记者节福利 · 6 项，5 项全自动）
+### 🎪 小程序活动任务（星巴克协作 / 记者节福利 · 6 项，全部自动）
 
 小程序原生活动页（`campaign_starbucks_2026` / `campaign_reporter_2026`）的任务不走成长中心，判据在活动域 `https://www.codebuddy.cn/portal/activity/*`，**完成≠到账，必须再调 `claim`**。
 
@@ -497,7 +497,7 @@ python daily_forward.py daily.log --wx
 | 星巴克协作 | `expert` 召唤专家并对话 | 100 | mp 专家四连（含专家 `id`） |
 | 记者节福利 | `expert_chat` 体验「媒体工作助理」 | 50 | 同上，专家固定 `ex_NaiDbO06Adf3` |
 | 记者节福利 | `skill_use` 体验「采访素材整理」 | 50 | `skill_info` + `chat_request_send`（`skillId` + **slug** `interview-material-organizer`） |
-| 星巴克协作 | `app` 解锁 App 强大能力 | 100 | 手机端 App 登录后与 AI 对话 1 次（脚本不伪造，完成后自动领奖） |
+| 星巴克协作 | `app` 解锁 App 强大能力 | 100 | 建 agentos 会话 + 一次 `acp/bootstrap` 真跑完一轮对话（4 个请求） |
 | 记者节福利 | `desktop_same` 体验「内容发布排期」灵感 | 100 | 桌面域 `playbook_prompt_send` 一条，`id` 用产物目录名 `cnb-content-calendar` |
 
 > 🔑 **技能判据按 slug 认人**：`skillName` 传中文显示名（`采访素材整理`）不计数，必须传 `interview-material-organizer`；`id` 字段同值。
@@ -505,7 +505,7 @@ python daily_forward.py daily.log --wx
 > ⏳ **判据异步落库**：上报后先 3 秒快轮询两轮，未达标再走 10 秒慢轮询一轮；仍未落库只打印 `⏳ 判据延迟未落库` 留给下一轮补领，不判失败。
 > 🎁 **领奖**：`POST /portal/activity/tasks/<code>/claim?activity_code=<活动码>`，只有 claim 后**回读到该任务的 `claimed_at`** 才记 `+积分`（回读 4 秒 × 5 次）；未落库打印 `⚠️ 已提交但未回读到 claimed_at，下轮重试`，不把延迟入账误报成成功。
 > 🧭 **只认下发的任务**：遍历以活动实际返回的 `tasks[]` 为准，本地 spec 里未下发的任务打印 `⏭️ 未下发/已下线` 并跳过；读取失败（HTTP 非 200、业务码非 0）会打印 `⚠️ 活动任务读取失败`，401/500 不再静默变成「活动已结束」。
-> 🧩 **唯一必须真实环境的任务**：星巴克 `app` 需手机端 App 登录后与 AI 对话 1 次（`app_login` 只是 OAuth state，不是事件码；APK 内 `WorkBuddy_APP` 事件层复刻 6 组实测全不计数）。脚本只提示、不伪造，任务一旦完成下次运行会自动领奖。
+> 📱 **`app` 判据是「真会话」不是「事件」**：手机端 App 走的是 agentos 云端会话，判据看会话有没有真跑完一轮对话。所以脚本按 App 身份头（`X-Client-Product: workbuddy-app`）建会话，再用一次 `POST {boxUrl}/acp/bootstrap` 把 `initialize + session/new + session/prompt` 一起提交，等 `stopReason` 收尾——`POST /v2/as/conversations/` → bootstrap → `claim`，全程 4 个请求、prompt 只发「你只需要回复"Hi"」。补发埋点（`app_login` / `chat_request_send`）、网页会话、真机 APK 事件层复刻都不计数。
 > 🖇️ **灵感判据认产物目录名**：`desktop_same` 只认桌面域一条 `playbook_prompt_send`，且 `id` 必须是 `cnb-content-calendar`（注册表 slug `content-calendar`、中文名都不计数），5 秒内到账；无需真跑桌面端、无需同机登录。
 
 ### 🎮 互动玩法（8 项）
@@ -552,11 +552,11 @@ python daily_forward.py daily.log --wx
 | :--- | :-: | :-: | :-: |
 | 成长中心任务（云端） | 23 | 23 | 0 |
 | 小程序任务 | 7 | 7 | 0 |
-| 小程序活动任务 | 6 | 5 | 1 项需真实环境（`app`，脚本负责到账） |
+| 小程序活动任务 | 6 | 6 | 0 |
 | 互动玩法 | 8 | 8 | 0 |
 | 每日签到 | 1 | 1 | 0 |
 | 📦 已归档 | 3 类 | — | 开学季活动（含大转盘）· 校园日 `school_season` · 公益专家 `Expert_Philanthropy` |
-| **合计** | **45** | **44** | **1 项需真实环境（脚本负责到账）** |
+| **合计** | **45** | **45** | **0** |
 
 > ℹ️ 成长中心任务会随活动更新。脚本内置**未覆盖任务检测**：遇到没适配的新任务会在日志中明确提示。
 >
@@ -701,7 +701,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v48`（2026-11-12，小程序活动任务自动化）· **脚本版本**：`v3.47`
+- **当前发布版**：`v48`（2026-11-12，小程序活动任务自动化）· **脚本版本**：`v3.48`（补齐 `app` 任务，待发 `v49`）
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 

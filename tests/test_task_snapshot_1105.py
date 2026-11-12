@@ -836,6 +836,8 @@ class TaskSnapshotTests(unittest.TestCase):
             "prog",
             "t_accept_all",
             BASE=BASE,
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=3,
             time=types.SimpleNamespace(sleep=sleeps.append),
             _accept_with_verify=lambda *args: True,
             ensure_first_buddy=lambda *args: True,
