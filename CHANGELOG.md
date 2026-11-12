@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.44（2026-11-12）
+
+- 新增 `skill_share` 实链：按 WorkBuddy 5.9.3 客户端调用 Open Platform
+  `asset-shares/c2c/channels`，从当前市场列表选取技能并创建真实分享渠道。
+- 仅创建渠道不会点亮任务；按官方事件族上报 `skill_share_channel_action`
+  的 `click/success`，随后回读服务端进度，只有 `completed + 1/1` 才领取奖励。
+- 渠道失败、事件上报失败、进度未点亮或回执缺少 `share_code/link` 时均不领奖，
+  不使用 `skill_share_success` 等无源码证据的事件名。
+- 6 个本地账号已逐一完成并回读 `accept_status=claimed`、`progress=1/1`；
+  每个账号实到 `+100积分+5能量`。
+- 新增渠道、回读、未点亮不领奖、锁定/已领取、空市场与失败分支回归；全套 `138` 项测试通过。
+
 ## v3.43（2026-11-11）
 
 - 修复补签到点后状态查询或领取请求发生网络异常时，旧记录一直停在已到点状态、后续 cron 重复请求的问题。

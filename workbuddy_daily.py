@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.43
+🌱 WorkBuddy Daily - 全能签到脚本 v3.44
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
    一个脚本搞定 WorkBuddy 全部自动化：Token 自动续期、积分/用量查询、
-   22 项成长任务、8 项互动玩法、小程序成长任务、
+   23 项成长任务、8 项互动玩法、小程序成长任务、
    自动领奖，全部无人值守。
 
 ✨ 特性
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
-   ✅ 成长任务       22 项云端任务全覆盖（含专家体验任务；链式任务见下一行）
+   ✅ 成长任务       23 项云端任务全覆盖（含专家体验任务；链式任务见下一行）
    📱 链式任务       Tasks_1~6 小程序 + Task_7 PC 灵感（每日零点解锁一环）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
@@ -112,8 +112,8 @@
    ⚠️ RT 是你唯一的续期凭据，泄露了别人就能操作你的账号
 
 📦 任务清单
-   ☁️ 成长中心任务（22 项，云端 + 桌面）
-      每日签到 · 设计创意模式 · 探索优秀灵感 · 桌面端对话 · 尝鲜热门技能
+   ☁️ 成长中心任务（23 项，云端 + 桌面）
+      每日签到 · 设计创意模式 · 探索优秀灵感 · 桌面端对话 · 尝鲜热门技能 · 分享技能给好友
       体验资料库 · 腾讯轻量云专家 · 和平精英主题 · 发现应用 · 企鹅教师助手
       GLM-5.2模型对话 · 和AI聊天5次 · 夜猫子活动 · 召唤3次专家团 · 召唤5次专家
       使用5个模板 · 设置自动化任务 · 领取Buddy · 无畏契约拼豆专家
@@ -146,6 +146,8 @@
    · 签到判定：先查 activity-status，仅在活动期且今日未签时领取；空回执不再写成成功
    · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
    · 真实会话 id：专家/技能任务的 requestId/messageId 取自真实对话的服务端消息 id（cmb- 形态）
+   · 技能分享：调用 5.9.3 客户端实证的 Open Platform asset-shares/c2c/channels 创建真实渠道，
+     再上报 skill_share_channel_action；只按服务端 1/1 和领取回执判成功
    · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
    · 签到读数：签到后读 /billing/meter/checkin-activity-status（签到连签/累计积分/连签奖励日）
      并做活动到期预警：距 end_time ≤7 天或活动已关闭时，日志给出 ⚠️ 提示
@@ -4849,6 +4851,239 @@ def t_sequential_tasks_7(s, uid, nick, log):
     log("   PC灵感功能: %s %s/%s" % (status, current, target))
 
 
+SKILL_SHARE_CHANNEL_URL = (
+    "https://open.workbuddy.cn/api/v2/open-platform/"
+    "asset-shares/c2c/channels"
+)
+
+
+def _skill_share_market_skill(s):
+    """从一个当前可分享的市场技能中提取官方 createShare 所需字段。"""
+    response = api_retry(
+        s, "POST", CBDOMAIN + "/v2/operation-platform/market/skill/list",
+        body={"page": 1, "page_size": 20},
+    )
+    try:
+        payload = response.json() or {}
+    except Exception:
+        return None
+    if response.status_code < 200 or response.status_code >= 300:
+        return None
+    if not _api_code_ok(payload.get("code")):
+        return None
+    skills = (payload.get("data") or {}).get("skills") or []
+    candidates = []
+    for row in skills:
+        if not isinstance(row, dict):
+            continue
+        skill_id = str(row.get("skill_id") or row.get("id") or "").strip()
+        if not skill_id:
+            continue
+        name = str(
+            row.get("display_name_zh")
+            or row.get("name")
+            or row.get("display_name_en")
+            or ""
+        ).strip()
+        if not name:
+            continue
+        candidates.append({
+            "id": skill_id,
+            "name": name,
+            "description": str(
+                row.get("description_zh")
+                or row.get("description")
+                or row.get("description_en")
+                or ""
+            ).strip()[:60],
+        })
+    if not candidates:
+        return None
+    return next(
+        (row for row in candidates if row["id"] == SKILL_FALLBACK[0]),
+        candidates[0],
+    )
+
+
+def _create_skill_share_channel(s, uid, skill):
+    """按 5.9.3 客户端官方请求体创建真实 asset-share 渠道。"""
+    skill_id = str(skill.get("id") or "").strip()
+    if not skill_id:
+        return {"success": False, "message": "市场技能 ID 为空"}
+    body = {
+        "asset_kind": "skill",
+        "asset_source": "market",
+        "asset_ref": json.dumps(
+            {"asset_id": skill_id}, separators=(",", ":")
+        ),
+        "ways": ["link", "wxacode", "wxapath"],
+        "extra": {
+            "name": skill.get("name") or "技能",
+            "description": skill.get("description") or "",
+            "shareKey": skill_id,
+            "marketplaceSource": "builtin-market",
+        },
+    }
+    headers = {
+        "Authorization": s.headers.get("Authorization", ""),
+        "X-User-Id": uid,
+        "X-Domain": "copilot.tencent.com",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": DESKTOP_UA,
+    }
+    response = s.post(
+        SKILL_SHARE_CHANNEL_URL, json=body, headers=headers,
+        timeout=30, verify=False,
+    )
+    try:
+        payload = response.json() or {}
+    except Exception:
+        return {
+            "success": False,
+            "http": response.status_code,
+            "message": "分享接口返回非 JSON",
+        }
+    if response.status_code < 200 or response.status_code >= 300:
+        return {
+            "success": False,
+            "http": response.status_code,
+            "message": str(payload.get("msg") or "")[:100],
+        }
+    if not _api_code_ok(payload.get("code")):
+        return {
+            "success": False,
+            "http": response.status_code,
+            "code": payload.get("code"),
+            "message": str(payload.get("msg") or "")[:100],
+        }
+    data = payload.get("data") or {}
+    share_code = str(data.get("share_code") or "").strip()
+    link = ""
+    for way in data.get("ways") or []:
+        if isinstance(way, dict) and way.get("share_way") == "link":
+            link = str(way.get("resource_ref") or "").strip()
+            break
+    if not share_code or not link:
+        return {
+            "success": False,
+            "http": response.status_code,
+            "message": "分享接口缺少 share_code 或 link",
+        }
+    return {
+        "success": True,
+        "shareCode": share_code,
+        "channelId": str(data.get("channel_id") or ""),
+    }
+
+
+def _skill_share_channel_events(skill_id, skill_name, share_code):
+    common = {
+        "skillId": skill_id,
+        "skillName": skill_name,
+        "skillType": "market",
+    }
+    now = int(time.time() * 1000)
+    return [
+        {
+            "eventCode": "skill_share_channel_action",
+            **common,
+            "action": "link",
+            "panelAction": "click",
+            "panelType": "clipboard",
+            "isSuccessful": True,
+            "cost": 0,
+            "id": share_code,
+            "actionAt": now,
+        },
+        {
+            "eventCode": "skill_share_channel_action",
+            **common,
+            "action": "link",
+            "panelAction": "success",
+            "panelType": "clipboard",
+            "isSuccessful": True,
+            "cost": 0,
+            "id": share_code,
+            "actionAt": now,
+        },
+    ]
+
+
+def t_skill_share(s, uid, nick, log, snapshot=None):
+    """skill_share：创建真实技能分享渠道，上报官方渠道事件并回读进度。"""
+    code = "skill_share"
+    row = _task_snapshot_row(snapshot, code)
+    if row is None:
+        row = _growth_task_row(s, code)
+    if row is None:
+        log("   分享技能给好友: 桌面任务列表未下发，跳过")
+        return
+    if row.get("locked"):
+        log("   分享技能给好友: 未到上线时间，跳过")
+        return
+    status = row.get("accept_status") or row.get("status") or ""
+    claimed = row.get("claimed")
+    if status == "claimed" or claimed is True or str(claimed).lower() == "true":
+        log("   分享技能给好友: 已领取，跳过")
+        return
+    progress = row.get("progress") or {}
+    current = _as_int(progress.get("current"))
+    target = _as_int(progress.get("target")) or 1
+    if status == "completed" or current >= target:
+        log("   分享技能给好友: 已达标，补领奖励")
+        claim(s, code, log)
+        return
+    if status in ("", "not_accepted") and not _accept_with_verify(s, code, log):
+        log("   分享技能给好友: 接受任务失败，跳过")
+        return
+
+    skill = _skill_share_market_skill(s)
+    if skill is None:
+        log("   分享技能给好友: 市场列表未返回可分享技能，不伪造分享")
+        return
+    result = _create_skill_share_channel(s, uid, skill)
+    if not result.get("success"):
+        log("   分享技能给好友: 创建分享渠道失败 HTTP=%s code=%s %s" % (
+            result.get("http", "?"),
+            result.get("code", "?"),
+            str(result.get("message") or "")[:70],
+        ))
+        return
+    events = _skill_share_channel_events(
+        skill["id"], skill["name"], result["shareCode"],
+    )
+    report_status = report_desktop_events(s, uid, nick, events)
+    if report_status < 200 or report_status >= 300:
+        log("   分享技能给好友: 渠道已创建但事件上报失败 HTTP %s，不领奖" % (
+            report_status,
+        ))
+        return
+
+    status, current, target = prog(s, code)
+    for _ in range(4):
+        if status == "completed" or status == "claimed" or (
+                isinstance(current, (int, float))
+                and isinstance(target, (int, float))
+                and current >= target):
+            break
+        time.sleep(3)
+        status, current, target = prog(s, code)
+    if status == "claimed":
+        log("   分享技能给好友: 已领取 %s/%s" % (current, target))
+        return
+    if status == "completed" or (
+            isinstance(current, (int, float))
+            and isinstance(target, (int, float))
+            and current >= target):
+        log("   分享技能给好友: ✅ %s %s/%s" % (skill["name"], current, target))
+        claim(s, code, log)
+        return
+    log("   分享技能给好友: 已创建真实渠道，但进度未点亮 %s/%s，不领奖" % (
+        current, target,
+    ))
+
+
 def t_unknown_tasks(s, uid, nick, log, snapshot=None):
     """任务列表体检：动态发现新任务 + 未完成任务的有效期预警
 
@@ -4859,7 +5094,7 @@ def t_unknown_tasks(s, uid, nick, log, snapshot=None):
     """
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
-             "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
+             "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_share", "skill_1", "expert_5",
              "template_5", "automation_1", "workstation_expert", "WorkBuddy_Valorant",
              "expert_use_maidehao", "expert_use_douyinyin",
              "expert_use_shangjia_xuanchuan", "expert_use_bowangwang",
@@ -5480,7 +5715,7 @@ def run_account(idx, acc, do_desktop):
             (("；跳过 " + ",".join(sorted(TASK_SKIP))) if TASK_SKIP else "")))
         # 「使用类」任务才会给成长中心记活跃（热力墙）。全被过滤掉时明确提醒：
         # 签到只给积分、不点热力墙——别把页面上的「开始使用以点亮今日热力墙」当成签到失败
-        _usage = {"chat_5", "model_chat_glm5.2", "desktop", "richmeow_chat", "skill_1", "black_cat",
+        _usage = {"chat_5", "model_chat_glm5.2", "desktop", "richmeow_chat", "skill_share", "skill_1", "black_cat",
                   "expert_5", "expert_team_use_3", "template_5", "create_canvas", "playbook_prompt",
                   "sequential_tasks_1", "sequential_tasks_3", "sequential_tasks_5",
                   "automation_1", "library_read", "hp_appearance", "buddy_app", "buddy_app_qq",
@@ -5508,6 +5743,8 @@ def run_account(idx, acc, do_desktop):
     t_accept_all(
         s, uid, nick, log, rows=accept_rows,
         done_codes=task_done_codes)
+    _run("分享技能给好友", ["skill_share"],
+         lambda: t_skill_share(s, uid, nick, log, snapshot=task_snapshot))
     _checkin_state = {}
     _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log, _checkin_state))
     _run("召唤3次专家团", ["Expert_team_use_3"], lambda: t_team_3(s, uid, nick, log))

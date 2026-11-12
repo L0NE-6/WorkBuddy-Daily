@@ -2600,5 +2600,200 @@ class TaskDispatchGuardTests(unittest.TestCase):
         self.assertIn("积分: 100 → 150（本轮 +50）", text)
 
 
+class SkillShareTaskTests(unittest.TestCase):
+    def _namespace(
+        self, row, channel_payload, progress_values, report_status=200,
+        market_skills=None,
+    ):
+        responses = []
+        reports = []
+        claims = []
+        sleeps = []
+        progress = iter(progress_values)
+        if market_skills is None:
+            market_skills = [{
+                "skill_id": "skill_preferred",
+                "name": "Preferred Skill",
+                "description": "description",
+                "source": "builtin-market",
+            }]
+
+        class Session:
+            headers = {"Authorization": "Bearer test-token"}
+
+            def __init__(self):
+                self.responses = []
+
+            def post(self, url, **kwargs):
+                responses.append((url, kwargs))
+                self.responses.append((url, kwargs))
+                if "market/skill/list" in url:
+                    return FakeResponse(payload={
+                        "code": 0,
+                        "data": {"skills": market_skills},
+                    })
+                return FakeResponse(payload=channel_payload)
+
+        session = Session()
+        fake_time = types.SimpleNamespace(
+            time=lambda: 1_700_000_000,
+            sleep=sleeps.append,
+        )
+        module = load_functions(
+            "_skill_share_market_skill",
+            "_create_skill_share_channel",
+            "_skill_share_channel_events",
+            "t_skill_share",
+            api_retry=lambda *args, **kwargs: session.post(
+                kwargs.get("url") or args[2], **kwargs),
+            CBDOMAIN="https://example.test",
+            SKILL_SHARE_CHANNEL_URL="https://share.test/channels",
+            SKILL_FALLBACK=("skill_preferred", "Preferred Skill"),
+            _api_code_ok=lambda code: code in (0, "0"),
+            json=json,
+            DESKTOP_UA="WorkBuddy/5.9.3",
+            _as_int=lambda value: int(value or 0),
+            _task_snapshot_row=lambda snapshot, code: None,
+            _growth_task_row=lambda session, code: dict(row),
+            _accept_with_verify=lambda *args, **kwargs: True,
+            report_desktop_events=lambda session, uid, nick, events: (
+                reports.append(events) or report_status
+            ),
+            prog=lambda session, code: next(progress),
+            claim=lambda session, code, log: claims.append(code) or True,
+            time=fake_time,
+        )
+        return module, session, reports, claims, sleeps
+
+    def test_real_channel_and_progress_readback_gate_claim(self):
+        module, session, reports, claims, _ = self._namespace(
+            {
+                "task_code": "skill_share",
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+            },
+            {
+                "code": 0,
+                "data": {
+                    "channel_id": "channel-1",
+                    "share_code": "share-1",
+                    "ways": [{
+                        "share_way": "link",
+                        "resource_ref": "https://share.example/skill",
+                    }],
+                },
+            },
+            [
+                ("accepted", 0, 1),
+                ("completed", 1, 1),
+            ],
+        )
+        logs = []
+        module["t_skill_share"](
+            session, "uid-1", "nick", logs.append, snapshot=None)
+
+        self.assertEqual(["skill_share"], claims)
+        self.assertEqual(1, len(reports))
+        self.assertEqual(
+            ["skill_share_channel_action", "skill_share_channel_action"],
+            [event["eventCode"] for event in reports[0]],
+        )
+        self.assertEqual(
+            ["click", "success"],
+            [event["panelAction"] for event in reports[0]],
+        )
+        self.assertTrue(any("✅" in line for line in logs))
+
+    def test_channel_without_progress_never_claims(self):
+        module, session, reports, claims, sleeps = self._namespace(
+            {
+                "task_code": "skill_share",
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+            },
+            {
+                "code": 0,
+                "data": {
+                    "channel_id": "channel-1",
+                    "share_code": "share-1",
+                    "ways": [{
+                        "share_way": "link",
+                        "resource_ref": "https://share.example/skill",
+                    }],
+                },
+            },
+            [("accepted", 0, 1)] * 5,
+        )
+        logs = []
+        module["t_skill_share"](
+            session, "uid-1", "nick", logs.append, snapshot=None)
+
+        self.assertEqual(1, len(reports))
+        self.assertEqual([], claims)
+        self.assertEqual(4, len(sleeps))
+        self.assertTrue(any("进度未点亮" in line for line in logs))
+
+    def test_channel_failure_does_not_report_or_claim(self):
+        module, session, reports, claims, _ = self._namespace(
+            {
+                "task_code": "skill_share",
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+            },
+            {"code": 110002, "msg": "not shareable", "data": {}},
+            [],
+        )
+        module["t_skill_share"](
+            session, "uid-1", "nick", lambda message: None, snapshot=None)
+
+        self.assertEqual([], reports)
+        self.assertEqual([], claims)
+
+    def test_locked_and_claimed_rows_are_noops(self):
+        for row in (
+            {
+                "task_code": "skill_share",
+                "accept_status": "accepted",
+                "locked": True,
+                "progress": {"current": 0, "target": 1},
+            },
+            {
+                "task_code": "skill_share",
+                "accept_status": "claimed",
+                "progress": {"current": 1, "target": 1},
+            },
+        ):
+            with self.subTest(row=row):
+                module, session, reports, claims, _ = self._namespace(
+                    row, {"code": 0, "data": {}}, []
+                )
+                module["t_skill_share"](
+                    session, "uid-1", "nick",
+                    lambda message: None, snapshot=None,
+                )
+                self.assertEqual([], reports)
+                self.assertEqual([], claims)
+
+    def test_empty_market_list_does_not_create_or_claim(self):
+        module, session, reports, claims, _ = self._namespace(
+            {
+                "task_code": "skill_share",
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+            },
+            {"code": 0, "data": {}},
+            [],
+            market_skills=[],
+        )
+        logs = []
+        module["t_skill_share"](
+            session, "uid-1", "nick", logs.append, snapshot=None)
+
+        self.assertEqual([], reports)
+        self.assertEqual([], claims)
+        self.assertEqual(1, len(session.responses))
+        self.assertIn("市场列表未返回可分享技能", " ".join(logs))
+
+
 if __name__ == "__main__":
     unittest.main()
