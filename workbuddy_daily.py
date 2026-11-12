@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.44
+🌱 WorkBuddy Daily - 全能签到脚本 v3.45
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -2721,9 +2721,17 @@ def t_buddy_apps(s, uid, nick, log):
         buddy_name = "企鹅教师助手" if "QQ" in task else "发现应用"
         evs = desktop_buddy5_sequence(uid, nick, buddy_id, buddy_name)
         try:
-            report_desktop_events(s, uid, nick, evs)
-            log("   %s: buddyapp 五连 OK" % task)
-            time.sleep(WRITE_GAP)
+            report_status = report_desktop_events(s, uid, nick, evs)
+            if report_status < 200 or report_status >= 300:
+                log("   %s: buddyapp 五连上报失败 HTTP %s" % (
+                    task, report_status))
+                continue
+            time.sleep(4)
+            st2, cur2, tgt2 = prog(s, task)
+            log("   %s: buddyapp 五连已受理，回读 %s %s/%s" % (
+                task, st2, cur2, tgt2))
+            if st2 == "completed":
+                claim(s, task, log)
         except Exception as e:
             log("   %s: buddyapp failed %s" % (task, str(e)[:60]))
     log("   发现应用/企鹅教师助手: %s / %s" % (prog(s, "Buddy_App")[0], prog(s, "Buddy_App_QQ")[0]))
@@ -2781,10 +2789,28 @@ def t_library(s, uid, nick, log):
     if st in ("completed", "claimed"):
         log("   体验资料库: 已 %s" % st)
         return
-    report_web_event(s, uid, nick, "web_element_click", LIB_DOC_URL,
-                     "library_doc_intro_click", "WorkBuddy资料库介绍")
+    response = report_web_event(
+        s, uid, nick, "web_element_click", LIB_DOC_URL,
+        "library_doc_intro_click", "WorkBuddy资料库介绍",
+    )
+    status_code = getattr(response, "status_code", 0)
+    try:
+        payload = response.json() or {}
+    except Exception:
+        payload = {}
+    if status_code < 200 or status_code >= 300 or not _api_code_ok(
+            payload.get("code")):
+        log("   体验资料库: 上报失败 HTTP %s code=%s %s" % (
+            status_code,
+            payload.get("code", "?"),
+            str(payload.get("msg") or "")[:60],
+        ))
+        return
     time.sleep(6)
-    log("   体验资料库: %s" % prog(s, "Library_read")[0])
+    status, current, target = prog(s, "Library_read")
+    log("   体验资料库: %s %s/%s" % (status, current, target))
+    if status == "completed":
+        claim(s, "Library_read", log)
 
 
 def t_chat_n(s, uid, nick, log, code, n, prompts):
@@ -5467,7 +5493,8 @@ def desktop_buddy5_sequence(uid, nick, buddy_id, buddy_name):
     mk("buddyapp_discover_click", {})
     mk("buddyapp_show", {"elementId": buddy_id, "elementName": buddy_name, "position": 2})
     mk("buddyapp_enter_click",
-       {"elementId": buddy_id, "elementName": buddy_name, "position": 2, "isFirstPage": "1"})
+       {"elementId": buddy_id, "elementName": buddy_name, "position": 2,
+        "isFirstPage": True})
     mk("buddyapp_auth_confirm_click", {"elementId": buddy_id, "elementName": buddy_name})
     mk("buddyapp_bindaccount_skip_click", {"elementId": buddy_id, "elementName": buddy_name})
     return ev
@@ -5507,18 +5534,14 @@ def report_desktop_events(s, uid, nick, events):
 
 
 def report_web_event(s, uid, nick, event_code, page_url, element_id, element_name):
-    """以 web 域指纹上报单事件（Library_read）。"""
+    """以 web 域指纹上报单事件（Library_read）；/v2/report 只接受裸数组。"""
     now = int(time.time() * 1000)
     ev = {"eventCode": event_code, "timestamp": now, "reportDelay": 0,
           "pageURL": page_url, "elementId": element_id, "elementName": element_name,
           "os": "Win32", "arch": "", "osVersion": "10.0",
           "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
           "machineId": derive_id(uid, "webmachine"), "userId": uid, "userNickname": nick}
-    return api_retry(s, "POST", BASE + "/v2/report", body={"common": {
-        "userId": uid, "userNickname": nick, "ideName": "web",
-        "ideType": "web", "machineId": derive_id(uid, "webmachine"),
-        "mode": "CLOUD", "userAgent": "Mozilla/5.0", "os": "Win32",
-        "timezone": "Asia/Shanghai"}, "events": [ev]})
+    return api_retry(s, "POST", BASE + "/v2/report", body=[ev])
 
 
 def _accept_with_verify(s, code, log):

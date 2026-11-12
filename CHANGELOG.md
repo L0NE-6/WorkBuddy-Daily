@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.45（2026-11-12）
+
+- 修复 `Library_read`：`/v2/report` 改为服务端要求的裸数组事件体，不再使用
+  `{"common":...,"events":[...]}` 信封；HTTP 或业务码失败会明确记录且不领奖。
+- `Library_read` 上报成功后回读任务进度，只有 `completed` 才领取奖励。
+- 修复 `Buddy_App`：`buddyapp_enter_click.isFirstPage` 由字符串 `"1"` 改为
+  bool `true`，避免服务端按格式校验丢弃第 3 条事件。
+- `Buddy_App` 五连上报后立即回读进度；上报失败、部分事件被丢弃或进度未点亮时
+  不再打印“OK”，也不会误领奖励。
+- 新增裸数组事件体、bool 类型、上报失败可见性和进度回读领奖回归；全套
+  `143` 项测试通过。
+
 ## v3.44（2026-11-12）
 
 - 新增 `skill_share` 实链：按 WorkBuddy 5.9.3 客户端调用 Open Platform

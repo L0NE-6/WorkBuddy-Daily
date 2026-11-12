@@ -2600,6 +2600,128 @@ class TaskDispatchGuardTests(unittest.TestCase):
         self.assertIn("积分: 100 → 150（本轮 +50）", text)
 
 
+class WebReportAndBuddyAppTests(unittest.TestCase):
+    def test_report_web_event_posts_bare_array(self):
+        captured = {}
+
+        class Session:
+            def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["json"] = kwargs.get("json")
+                return FakeResponse(payload={"code": 0, "msg": "OK"})
+
+        module = load_functions(
+            "report_web_event",
+            api_retry=lambda session, method, url, body=None, **kwargs: (
+                session.post(url, json=body, **kwargs)),
+            BASE="https://example.test",
+            derive_id=lambda uid, salt: "stable-id",
+            time=time,
+        )
+        response = module["report_web_event"](
+            Session(), "uid-1", "nick", "web_element_click",
+            "https://example.test/doc", "element-1", "资料库",
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertIsInstance(captured["json"], list)
+        self.assertEqual("web_element_click", captured["json"][0]["eventCode"])
+
+    def test_buddy_enter_click_uses_boolean_is_first_page(self):
+        module = load_functions("desktop_buddy5_sequence")
+        events = module["desktop_buddy5_sequence"](
+            "uid-1", "nick", "buddy-1", "Buddy")
+        enter = next(
+            event for event in events
+            if event["eventCode"] == "buddyapp_enter_click"
+        )
+
+        self.assertIs(True, enter["isFirstPage"])
+
+    def test_buddy_app_claims_only_after_completed_readback(self):
+        claims = []
+        calls = {"buddy": 0}
+
+        def prog(session, code):
+            if code != "Buddy_App":
+                return None, None, None
+            calls["buddy"] += 1
+            if calls["buddy"] == 1:
+                return "accepted", 0, 1
+            return "completed", 1, 1
+
+        module = load_functions(
+            "t_buddy_apps",
+            prog=prog,
+            desktop_buddy5_sequence=lambda *args: [],
+            report_desktop_events=lambda *args: 200,
+            claim=lambda session, code, log: claims.append(code),
+            time=types.SimpleNamespace(sleep=lambda seconds: None),
+        )
+        logs = []
+        module["t_buddy_apps"](object(), "uid-1", "nick", logs.append)
+
+        self.assertEqual(["Buddy_App"], claims)
+        self.assertTrue(any("回读 completed 1/1" in line for line in logs))
+
+    def test_library_report_failure_is_visible_and_not_claimed(self):
+        claims = []
+
+        class Response:
+            status_code = 400
+
+            @staticmethod
+            def json():
+                return {
+                    "code": 10001,
+                    "msg": "10001:eventCode is empty or not string",
+                }
+
+        module = load_functions(
+            "t_library",
+            prog=lambda session, code: ("accepted", 0, 1),
+            report_web_event=lambda *args: Response(),
+            claim=lambda session, code, log: claims.append(code),
+            _api_code_ok=lambda code: code in (0, "0"),
+            LIB_DOC_URL="https://example.test/library",
+            time=types.SimpleNamespace(sleep=lambda seconds: None),
+        )
+        logs = []
+        module["t_library"](object(), "uid-1", "nick", logs.append)
+
+        self.assertEqual([], claims)
+        self.assertTrue(any("上报失败 HTTP 400" in line for line in logs))
+
+    def test_library_claims_after_completed_readback(self):
+        claims = []
+        states = iter([
+            ("accepted", 0, 1),
+            ("completed", 1, 1),
+        ])
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"code": 0, "msg": "OK"}
+
+        module = load_functions(
+            "t_library",
+            prog=lambda session, code: next(states),
+            report_web_event=lambda *args: Response(),
+            claim=lambda session, code, log: claims.append(code),
+            _api_code_ok=lambda code: code in (0, "0"),
+            LIB_DOC_URL="https://example.test/library",
+            time=types.SimpleNamespace(sleep=lambda seconds: None),
+        )
+        logs = []
+        module["t_library"](object(), "uid-1", "nick", logs.append)
+
+        self.assertEqual(["Library_read"], claims)
+        self.assertTrue(any("completed 1/1" in line for line in logs))
+
+
 class SkillShareTaskTests(unittest.TestCase):
     def _namespace(
         self, row, channel_payload, progress_values, report_status=200,
