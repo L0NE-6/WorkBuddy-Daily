@@ -1,5 +1,19 @@
 # 更新日志
 
+## v3.47（2026-11-12）
+
+- 新增小程序活动任务适配（`t_campaigns`）：星巴克协作 `campaign_starbucks_2026`（`ai_chat` ×3、`expert`）与记者节福利 `campaign_reporter_2026`（`expert_chat`、`skill_use`），判据走活动域 `/portal/activity/tasks`，进度/领奖/回读一体化。
+- **完成≠到账**：活动任务必须 `POST /portal/activity/tasks/<code>/claim?activity_code=<活动码>` 才入账，`code==0` 且回读出现 `claimed_at` 才算成功；此前"完成即自动结算"的判断作废。
+- 技能判据按 slug 认人：`skill_use` 的 `skillName` 必须传 `interview-material-organizer`，传中文显示名 `采访素材整理` 服务端不计数（回归测试锁定该口径）。
+- 判据信封并入真机页面上下文（`pageURL`/`pageName`），`mp_report` 新增 `env_extra` 参数；专家类任务固定使用活动指定 `expert_id`，不再回落随机专家。
+- 判据异步落库：3 秒快轮询 + 10 秒慢轮询各一轮，仍未落库打印 `⏳ 判据延迟未落库` 交给下一轮补领；补发上限收敛为「还差几次」（不再 `+2`），判据延迟时不对官方活动多发事件。
+- 领奖以回读为准：`_campaign_claim` 只认 claim 后回读到的 `claimed_at`（`CAMPAIGN_CLAIM_GAP`/`CAMPAIGN_CLAIM_POLL` 控制 4 秒 × 5 次），未落库打印「已提交但未回读到 claimed_at」留待下一轮，不再把延迟入账误报成 +积分。
+- 活动只下发部分任务时按实际 `tasks[]` 处理：本地 spec 里未下发的任务记「未下发/已下线」并跳过，不再按本地默认 target 硬发事件；`campaign_tasks` 对 HTTP 非 200 / 业务码非 0 记「活动任务读取失败」，401、500 不再静默变成「活动已结束」。
+- 新增 `CampaignTaskTests` / `CampaignEventShapeTests` / `CampaignClaimTests` / `CampaignReadTests` 共 19 项（含漏发补发、重发上限、已领跳过、slug 口径、页面上下文透传、灵感产物 id 口径、真实环境任务不伪造、claim 回读成功/未落库不记成功/HTTP 失败不回读、读取失败落日志）；全套 `174` 项测试通过（含基线并入的桌面认证与任务守卫回归）。
+- 实测 7 账号 4 项任务全部 `completed → claimed`，单账号本轮入账 350 积分；`desktop_same` 在 2 个账号上实测 `0/1 → 1/1 → claimed`（+100 积分）。
+- 打通记者节 `desktop_same`：只需一条桌面域 `playbook_prompt_send`，且 `id` 必须是产物目录名 `cnb-content-calendar`（注册表 slug `content-calendar`、中文名都不计数），5 秒内到账；无需真跑桌面端、无需同机登录（真实 `chat_request_send` 复刻、网页会话、渠道分享三条路实测均 0/1，判据只认这条灵感事件）。
+- 星巴克 `app`（手机端）仍需真机登录后与 AI 对话一次，脚本只提示不伪造，任务完成后下次运行自动领奖。
+
 ## v3.46（2026-11-12）
 
 - 桌面认证换血增加 `_wb_all_swapped` 标记：仅还原带脚本标记的认证文件，

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.46
+🌱 WorkBuddy Daily - 全能签到脚本 v3.47
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -4581,9 +4581,11 @@ def mp_mini_expert_event(uid, nick, expert_id, expert_name):
             "type": "send_message", "characterCount": 12, "expertType": "agent"}
 
 
-def mp_report(s, uid, nick, events):
+def mp_report(s, uid, nick, events, env_extra=None):
     """以小程序指纹向 www.codebuddy.cn/v2/report 批量上报（上游 ReportMPEvent 同款）。"""
     base = mp_base(uid, nick)
+    if env_extra:
+        base.update(env_extra)
     arr = []
     for e in events:
         m = dict(base)
@@ -4600,6 +4602,335 @@ def mp_report(s, uid, nick, events):
         return r.status_code
     except Exception:
         return 0
+
+
+# ---- 小程序活动任务（活动页 /portal/activity/*，与成长中心任务分属两套契约）----
+# 活动任务不进行成长计划列表：任务定义/进度在 codebuddy.cn 的 portal 接口，
+# 判据是「小程序埋点事件推进度 → 完成后调 claim 才入账」。星巴克/记者节两活动实测。
+CAMPAIGN_BASE = "https://www.codebuddy.cn"
+CAMPAIGN_GAP = 3          # 每次埋点上报后的轮询间隔（秒）
+CAMPAIGN_POLL = 6         # 单任务快轮询次数
+CAMPAIGN_SLOW_GAP = 10    # 判据异步落库：再来一轮慢轮询
+CAMPAIGN_SLOW_POLL = 6
+CAMPAIGN_CLAIM_GAP = 4    # claim 后回读 claimed_at 的间隔（秒）
+CAMPAIGN_CLAIM_POLL = 5   # 回读次数；失败只算「未确认」，留给下一轮
+CAMPAIGN_SPECS = [
+    {
+        "code": "campaign_starbucks_2026", "label": "星巴克协作",
+        # 真机埋点每条都带页面上下文（pageURL/pageName），活动判据按页认人
+        "page": {"pageURL": "subpackages/secondary/starbucks-activity-428/index",
+                 "pageName": "starbucks_activity"},
+        "tasks": [
+            {"task": "ai_chat", "label": "与 AI 对话3次", "kind": "chat",
+             "times": 3, "credit": 100},
+            {"task": "expert", "label": "召唤专家并对话", "kind": "expert",
+             "credit": 100},
+            # 需手机端 App 登录后与 AI 对话一次；脚本只负责到账，不伪造事件
+            {"task": "app", "label": "解锁 App 强大能力", "kind": "app",
+             "credit": 100},
+        ],
+    },
+    {
+        "code": "campaign_reporter_2026", "label": "记者节福利活动",
+        "page": {"pageURL": "subpackages/journalist-benefit/index",
+                 "pageName": "journalist_benefit"},
+        "tasks": [
+            {"task": "expert_chat", "label": "体验「媒体工作助理」专家", "kind": "expert",
+             "expert_id": "ex_NaiDbO06Adf3", "expert_name": "媒体工作助理", "credit": 50},
+            {"task": "skill_use", "label": "体验「采访素材整理」技能", "kind": "skill",
+             # 判据按**技能 slug** 认人：skillName/id 传 "采访素材整理" 不计数，
+             # 传 market 里 registry 的 name（interview-material-organizer）才推进度。
+             "skill_id": "skill_2117491159283752960",
+             "skill_name": "interview-material-organizer",
+             "credit": 50},
+            # 判据在服务端按桌面端会话算（addon_selection.microSceneIds 带案例产物），
+            # 事件复刻与网页会话都不计数 → 只在本机桌面端登录该账号时真跑一次
+            {"task": "desktop_same", "label": "体验「内容发布排期」灵感", "kind": "desktop",
+             "case_id": "content-calendar", "credit": 100},
+        ],
+    },
+]
+CAMPAIGN_TASK_CODES = {spec["code"] for spec in CAMPAIGN_SPECS} | {"campaign"}
+
+
+def _campaign_headers(s, uid):
+    """活动页请求头：小程序身份（桌面 AT 直接可用，服务端按账号体系认人）。"""
+    hdr = dict(MP_REPORT_HEADERS)
+    hdr["Authorization"] = s.headers.get("Authorization", "")
+    if uid:
+        hdr["X-User-Id"] = uid
+    return hdr
+
+
+def _campaign_call(s, uid, method, path, body=None):
+    """portal 接口调用；返回 (http_code, json_dict)。"""
+    s2 = requests.Session(); s2.trust_env = False
+    try:
+        if method == "GET":
+            r = s2.get(CAMPAIGN_BASE + path, headers=_campaign_headers(s, uid),
+                       timeout=20, verify=False)
+        else:
+            r = s2.post(CAMPAIGN_BASE + path, headers=_campaign_headers(s, uid),
+                        json=body or {}, timeout=20, verify=False)
+        return r.status_code, (r.json() if r.content else {})
+    except Exception:
+        return 0, {}
+
+
+def campaign_tasks(s, uid, camp, log=None):
+    """读活动任务定义 + 进度；返回 {task_code: row}，row 含 target/progress/时间戳。
+
+    请求失败（HTTP 非 200、业务码非 0、网络异常）会记一条日志：否则 401/500
+    会被上层当成「活动未下发」静默跳过，故障无从发现。
+    """
+    st, payload = _campaign_call(
+        s, uid, "GET", "/portal/activity/tasks?activity_code=" + camp)
+    code = (payload or {}).get("code")
+    if st != 200 or code not in (None, 0):
+        if log:
+            log("      ⚠️ 活动任务读取失败[%s]: HTTP %s %s"
+                % (camp, st, str(payload)[:80]))
+        return {}
+    data = (payload or {}).get("data") or {}
+    prog = {p.get("task_code"): p for p in (data.get("progress") or [])}
+    rows = {}
+    for t in data.get("tasks") or []:
+        code = t.get("task_code")
+        p = prog.get(code) or {}
+        rows[code] = {"target": t.get("target_count") or 0,
+                      "progress": p.get("progress") or 0,
+                      "completed_at": p.get("completed_at"),
+                      "claimed_at": p.get("claimed_at"),
+                      "need_view": t.get("need_view"),
+                      "credit": t.get("reward_credit") or 0}
+    return rows
+
+
+def _campaign_view(s, uid, camp, task):
+    """点「查看」建进度行（need_view 任务必须先 viewed，否则完成也不记账）。"""
+    _campaign_call(s, uid, "POST",
+                   "/portal/activity/tasks/%s/viewed?activity_code=%s" % (task, camp))
+
+
+def _campaign_claim(s, uid, camp, task, log, credit=0, tries=None, gap=None):
+    """领奖：claim 成功不等于入账，必须回读到 claimed_at 才算成功。
+
+    实测 claim 会立刻写 claimed_at，但存在延迟，所以回读失败只判「未确认」，
+    交给下一轮重试，不会把延迟入账误报成 +积分。
+    """
+    st, payload = _campaign_call(
+        s, uid, "POST", "/portal/activity/tasks/%s/claim?activity_code=%s" % (task, camp))
+    if not (st == 200 and (payload or {}).get("code") == 0):
+        log("   ⚠️领奖[%s/%s]: HTTP %s %s" % (camp, task, st, str(payload)[:80]))
+        return False
+    tries = CAMPAIGN_CLAIM_POLL if tries is None else tries
+    gap = CAMPAIGN_CLAIM_GAP if gap is None else gap
+    for i in range(max(1, tries)):
+        if i:
+            time.sleep(gap)
+        row = campaign_tasks(s, uid, camp, log).get(task) or {}
+        if row.get("claimed_at"):
+            log("   🎁领奖[%s/%s]: +%s积分" % (camp, task, credit))
+            return True
+    log("   ⚠️领奖[%s/%s]: 已提交但未回读到 claimed_at，下轮重试" % (camp, task))
+    return False
+
+
+def _campaign_poll(s, uid, camp, code, target, tries=None, gap=None, log=None):
+    """轮询单任务进度，返回当前 progress。
+
+    活动判据是**异步落库**的（实测 10s~1min 不等，偶发更久），所以不能
+    "发一次就判定失败"：先快轮询，未达标再走一轮慢轮询。
+    """
+    cur = 0
+    for _ in range(tries if tries is not None else CAMPAIGN_POLL):
+        time.sleep(gap if gap is not None else CAMPAIGN_GAP)
+        row = campaign_tasks(s, uid, camp, log).get(code) or {}
+        cur = row.get("progress") or 0
+        if row.get("completed_at") or cur >= target:
+            return max(cur, target)
+    return cur
+
+
+def _campaign_skill_events(skill_id, skill_name):
+    """技能体验判据：skill_info + 带 skillId 的 chat_request_send。"""
+    conv = _new_conversation_id()
+    rid = _new_message_id()
+    info = {"eventCode": "skill_info", "id": skill_name, "skillId": skill_id,
+            "skillName": skill_name, "skillType": "market", "skillSource": "market",
+            "position": 0, "conversationId": conv}
+    chat = {"eventCode": "chat_request_send", "inputLength": 14, "isPlan": False,
+            "isAutoExecuteTerminal": False, "isAutoModify": False, "codebaseEnable": False,
+            "maxToken": 0, "maxSteps": 500, "temperature": 0, "maxRetries": 0,
+            "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
+            "codebaseId": "", "mentionContextCount": 0, "command": "",
+            "recommendId": "", "skillId": skill_id, "skillCount": 1, "totalCount": 0,
+            "traceId": rid, "rootRequestId": rid,
+            "parentConversationId": conv, "conversationId": conv,
+            "messageId": "msg-" + rid[-8:], "agentName": "mp", "agentType": "main",
+            "codebuddy.session_id": conv,
+            "codebuddy.conversation_request_id": rid}
+    return [info, chat]
+
+
+CAMPAIGN_CASES = {
+    "content-calendar": {
+        # 上报用的 id 是产物目录名（cnb- 前缀），不是注册表里的 slug
+        "event_id": "cnb-content-calendar",
+        "name": "内容发布排期表",
+        "type": "table",
+        "prompt_length": 359,
+        "artifact": "https://static.workbuddy.cn/community/creation/"
+                    "cnb-content-calendar/artifact/output.xlsx",
+        "skill": "skill://skill_2053082401071824896",
+    },
+}
+CAMPAIGN_DESKTOP_WAIT = 60      # 判据异步落库，实测 5 秒内到账
+CAMPAIGN_DESKTOP_POLL = 6
+
+
+def _campaign_desktop_events(case):
+    """桌面域 `playbook_prompt_send`：活动判据只认这一条。"""
+    return [{"eventCode": "playbook_prompt_send",
+             "id": case.get("event_id") or "",
+             "name": case.get("name") or "",
+             "type": case.get("type") or "other",
+             "promptLength": case.get("prompt_length") or 0,
+             "isOfficial": 1,
+             "source": "discover",
+             "query": "",
+             "ext1": "discover",
+             "requestId": str(uuid.uuid4()),
+             "conversationId": str(uuid.uuid4())}]
+
+
+def _campaign_desktop_same(s, uid, nick, spec, task, log):
+    """reporter desktop_same：一条 `playbook_prompt_send` 即可点亮。
+
+    判据按 `id` 认案例，且必须是产物目录名 `cnb-content-calendar`
+    （传 `content-calendar` 或中文名都不计数，2026-11-12 实测）。
+    """
+    case_id = task.get("case_id") or "content-calendar"
+    case = CAMPAIGN_CASES.get(case_id) or {}
+    if not case:
+        log("      ⚠️ %s: 未内置案例 %s" % (task["label"], case_id))
+        return False
+    try:
+        return report(s, uid, nick, _campaign_desktop_events(case)) == 200
+    except Exception:
+        return False
+
+
+
+def _campaign_fire(s, uid, nick, spec, task, log):
+    """按 kind 上报一次判据事件；返回是否已上报。"""
+    kind = task.get("kind")
+    page = spec.get("page") or None
+    if kind == "desktop":
+        return _campaign_desktop_same(s, uid, nick, spec, task, log)
+    if kind == "app":
+        log("      ⚠️ %s: 需手机端 App 登录后与 AI 对话一次，脚本不伪造" % task["label"])
+        return False
+    if kind == "chat":
+        return mp_report(s, uid, nick, [mp_chat_event(uid, nick, None)],
+                         env_extra=page) == 200
+    if kind == "expert":
+        eid = task.get("expert_id")
+        ename = task.get("expert_name")
+        if not eid:
+            eid, ename = _mp_pick_expert(s)
+        if not eid:
+            log("      ✗ %s: 取不到专家 id，跳过" % task["label"])
+            return False
+        return mp_report(s, uid, nick, mp_expert_use_events(
+            uid, nick, eid, ename, _new_conversation_id()), env_extra=page) == 200
+    if kind == "skill":
+        return mp_report(s, uid, nick, _campaign_skill_events(
+            task.get("skill_id"), task.get("skill_name")), env_extra=page) == 200
+    return False
+
+
+def t_campaigns(s, uid, nick, log):
+    """小程序活动任务：星巴克协作 / 记者节福利 → 推进度 + 领奖。
+
+    与成长中心任务不同，活动任务**完成不等于到账**：completed 后必须再调
+    `POST /portal/activity/tasks/<code>/claim?activity_code=<camp>`，回读
+    claimed_at 才算数。
+
+    `desktop_same`（桌面端做同款）只上报一条桌面域 `playbook_prompt_send`
+    （`id` 用产物目录名 `cnb-content-calendar`）即可点亮；`app`（手机端 App）
+    不能靠补发事件推进，需要真机登录，脚本只提示、不伪造。两者只要行到
+    completed，本函数都会自动领奖。
+    """
+    gained = 0
+    for spec in CAMPAIGN_SPECS:
+        camp = spec["code"]
+        if not want("campaign", camp):
+            log("   ⏭️ %s: 按配置跳过" % spec["label"])
+            continue
+        rows = campaign_tasks(s, uid, camp, log)
+        if not rows:
+            log("   ⏭️ %s: 活动任务未下发/已结束" % spec["label"])
+            continue
+        log("   🎪 %s（%s）" % (spec["label"], camp))
+        for task in spec["tasks"]:
+            code = task["task"]
+            row = rows.get(code) or {}
+            if not row:
+                # 活动只下发部分任务时不能按本地 spec 硬发事件
+                log("      ⏭️ %s: 未下发/已下线" % task["label"])
+                continue
+            target = row.get("target") or task.get("times") or 1
+            if row.get("claimed_at"):
+                log("      ✅ %s: 已领奖（%s/%s）" % (task["label"], target, target))
+                continue
+            if row.get("completed_at"):
+                if _campaign_claim(s, uid, camp, code, log, row.get("credit") or task.get("credit") or 0):
+                    gained += row.get("credit") or task.get("credit") or 0
+                continue
+            if row.get("need_view", True):
+                _campaign_view(s, uid, camp, code)
+            cur = row.get("progress") or 0
+            kind = task.get("kind")
+            if kind == "app":
+                # 手机端 App 任务要真实登录 + 对话，脚本只提示，等真机完成后再补领。
+                if not _campaign_fire(s, uid, nick, spec, task, log):
+                    log("      ⏳ %s: 尚未完成（%s/%s），完成后再跑本脚本会自动领奖"
+                        % (task["label"], cur, target))
+                    continue
+            elif kind == "desktop":
+                # 一条桌面域事件即可，判据 5 秒内落库。
+                if not _campaign_fire(s, uid, nick, spec, task, log):
+                    log("      ⚠️ %s: 上报失败" % task["label"])
+                    continue
+                cur = _campaign_poll(s, uid, camp, code, target,
+                                     tries=max(2, CAMPAIGN_DESKTOP_WAIT // CAMPAIGN_DESKTOP_POLL),
+                                     gap=CAMPAIGN_DESKTOP_POLL, log=log)
+            else:
+                # 最多补发「还差几次」，不做额外重发：判据延迟时宁可交给下一轮，
+                # 也不对官方活动多发事件。
+                for _ in range(max(1, target - cur)):
+                    if cur >= target:
+                        break
+                    if not _campaign_fire(s, uid, nick, spec, task, log):
+                        break
+                    cur = _campaign_poll(s, uid, camp, code, target, log=log)
+                if cur < target:
+                    cur = _campaign_poll(s, uid, camp, code, target,
+                                         tries=CAMPAIGN_SLOW_POLL,
+                                         gap=CAMPAIGN_SLOW_GAP, log=log)
+            row = campaign_tasks(s, uid, camp, log).get(code) or {}
+            credit = row.get("credit") or task.get("credit") or 0
+            if not (row.get("completed_at") or cur >= target):
+                log("      ⏳ %s: 判据延迟未落库（%s/%s），下轮自动补领"
+                    % (task["label"], cur, target))
+                continue
+            log("      ✅ %s: completed %s/%s" % (task["label"], target, target))
+            if _campaign_claim(s, uid, camp, code, log, credit):
+                gained += credit
+    if gained:
+        log("   🎪 活动任务本轮入账 %s 积分" % gained)
+    return gained
 
 
 MP_EXPERT_CATEGORY = "16-BackToSchool"
@@ -5873,6 +6204,8 @@ def run_account(idx, acc, do_desktop):
          lambda: t_canvas_automation(s, uid, nick, log))
     _run("召唤5次专家", ["expert_5"], lambda: t_expert_5(s, uid, nick, log))
     _run("使用5个模板", ["template_5"], lambda: t_template_5(s, uid, nick, log))
+    _run("小程序活动任务", sorted(CAMPAIGN_TASK_CODES),
+         lambda: t_campaigns(s, uid, nick, log))
     _run("GLM-5.2/和AI聊天5次", ["Model_chat_GLM5.2", "chat_5"], lambda: t_glm52(s, uid, nick, log))
     _run("夜猫子", ["black_cat"], lambda: t_black_cat(s, uid, nick, log))
     _run("腾讯轻量云专家", ["Expert_lighthouse"], lambda: t_lighthouse(s, uid, nick, log))
@@ -6430,3 +6763,4 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 if __name__ == "__main__":
     main()
+

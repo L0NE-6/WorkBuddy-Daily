@@ -16,3 +16,7 @@ workbuddy_benefit_state.json.tmp
 __pycache__/
 *.pyc
 .env
+
+# 本地临时/探测目录
+.probe/
+tmp/
