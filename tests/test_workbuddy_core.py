@@ -3179,5 +3179,370 @@ class SkillShareTaskTests(unittest.TestCase):
         self.assertIn("市场列表未返回可分享技能", " ".join(logs))
 
 
+class CampaignTaskTests(unittest.TestCase):
+    """小程序活动任务口径：埋点推进度 → completed → claim 才入账。
+
+    实测（2026-11-12，星巴克/记者节）：活动任务不在成长中心列表里，
+    `/portal/activity/tasks` 才是判据来源；completed_at 之后必须再调
+    `POST /portal/activity/tasks/<code>/claim`，raw 回读 claimed_at 才算到账。
+    """
+
+    def _clock(self):
+        class _Clock:
+            @staticmethod
+            def time():
+                return 1700000000.0
+
+            @staticmethod
+            def sleep(_seconds):
+                return None
+        return _Clock
+
+    def _harness(self, state, claims, fired, advance=True):
+        """state: {campaign: {task: row}}；_fire 按调用推进度并写 completed_at。"""
+        import copy
+
+        def cam_tasks(_s, _uid, camp, log=None):
+            return copy.deepcopy(state.get(camp) or {})
+
+        def fire(_s, _uid, _nick, spec, task, _log):
+            fired.append((spec["code"], task["task"]))
+            if task.get("kind") == "app":
+                # 手机端 App 任务脚本不伪造事件
+                return False
+            row = state[spec["code"]][task["task"]]
+            if not advance:
+                # 判据延迟：服务端暂时不推进度
+                return True
+            row["progress"] = min(row["target"], row["progress"] + 1)
+            if row["progress"] >= row["target"]:
+                row["completed_at"] = "2026-11-12T11:00:00+08:00"
+            return True
+
+        return load_functions(
+            "_campaign_poll", "t_campaigns", time=self._clock(),
+            CAMPAIGN_SPECS=assignment_value("CAMPAIGN_SPECS"),
+            CAMPAIGN_POLL=assignment_value("CAMPAIGN_POLL"),
+            CAMPAIGN_GAP=assignment_value("CAMPAIGN_GAP"),
+            CAMPAIGN_SLOW_POLL=assignment_value("CAMPAIGN_SLOW_POLL"),
+            CAMPAIGN_SLOW_GAP=assignment_value("CAMPAIGN_SLOW_GAP"),
+            CAMPAIGN_DESKTOP_WAIT=assignment_value("CAMPAIGN_DESKTOP_WAIT"),
+            CAMPAIGN_DESKTOP_POLL=assignment_value("CAMPAIGN_DESKTOP_POLL"),
+            want=lambda *codes: True,
+            campaign_tasks=cam_tasks,
+            _campaign_fire=fire,
+            _campaign_view=lambda *a, **k: None,
+            _campaign_claim=lambda _s, _uid, camp, task, _log, credit=0: (
+                claims.append((camp, task)) or True),
+        )
+
+    def _blank_state(self):
+        return {
+            "campaign_starbucks_2026": {
+                "ai_chat": {"target": 3, "progress": 0, "completed_at": None,
+                            "claimed_at": None, "need_view": True, "credit": 100},
+                "expert": {"target": 1, "progress": 0, "completed_at": None,
+                           "claimed_at": None, "need_view": True, "credit": 100},
+                "app": {"target": 1, "progress": 0, "completed_at": None,
+                        "claimed_at": None, "need_view": True, "credit": 100},
+            },
+            "campaign_reporter_2026": {
+                "expert_chat": {"target": 1, "progress": 0, "completed_at": None,
+                                "claimed_at": None, "need_view": True, "credit": 50},
+                "skill_use": {"target": 1, "progress": 0, "completed_at": None,
+                              "claimed_at": None, "need_view": True, "credit": 50},
+                "desktop_same": {"target": 1, "progress": 0, "completed_at": None,
+                                 "claimed_at": None, "need_view": True, "credit": 100},
+            },
+        }
+
+    def test_skips_when_campaign_not_dispatched(self):
+        claims, fired, logs = [], [], []
+        module = self._harness({}, claims, fired)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], fired)
+        self.assertEqual([], claims)
+        self.assertTrue(any("未下发" in line for line in logs))
+
+    def test_fires_until_target_then_claims(self):
+        claims, fired, logs = [], [], []
+        module = self._harness(self._blank_state(), claims, fired)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        chat_hits = [f for f in fired if f == ("campaign_starbucks_2026", "ai_chat")]
+        self.assertEqual(3, len(chat_hits))          # target=3 → 三次对话
+        self.assertIn(("campaign_starbucks_2026", "expert"), fired)
+        self.assertIn(("campaign_reporter_2026", "expert_chat"), fired)
+        self.assertIn(("campaign_reporter_2026", "skill_use"), fired)
+        self.assertEqual(
+            [("campaign_starbucks_2026", "ai_chat"), ("campaign_starbucks_2026", "expert"),
+             ("campaign_reporter_2026", "expert_chat"), ("campaign_reporter_2026", "skill_use"),
+             ("campaign_reporter_2026", "desktop_same")],
+            claims)
+
+    def test_completed_task_claims_without_refire(self):
+        state = self._blank_state()
+        for camp_rows in state.values():
+            for row in camp_rows.values():
+                row["progress"] = row["target"]
+                row["completed_at"] = "2026-11-12T10:41:58+08:00"
+        claims, fired, logs = [], [], []
+        module = self._harness(state, claims, fired)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], fired)
+        self.assertEqual(6, len(claims))
+
+    def test_manual_tasks_stay_unfinished_with_hint(self):
+        """app 不伪造事件：不领取、只留提示；desktop_same 一条事件即可点亮。"""
+        claims, fired, logs = [], [], []
+        module = self._harness(self._blank_state(), claims, fired)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertIn(("campaign_reporter_2026", "desktop_same"), fired)
+        self.assertIn(("campaign_reporter_2026", "desktop_same"), claims)
+        self.assertIn(("campaign_starbucks_2026", "app"), fired)
+        self.assertNotIn(("campaign_starbucks_2026", "app"), claims)
+        self.assertTrue(any("尚未完成" in line and "App" in line for line in logs))
+
+    def test_claimed_task_is_skipped(self):
+        state = self._blank_state()
+        for camp_rows in state.values():
+            for row in camp_rows.values():
+                row["progress"] = row["target"]
+                row["completed_at"] = "2026-11-12T10:41:58+08:00"
+                row["claimed_at"] = "2026-11-12T10:56:28+08:00"
+        claims, fired, logs = [], [], []
+        module = self._harness(state, claims, fired)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], fired)
+        self.assertEqual([], claims)
+
+    def test_missing_task_row_is_not_fired(self):
+        """活动只下发部分任务时，未下发的那些不能按本地 spec 硬发事件。"""
+        state = {"campaign_starbucks_2026": {
+            "ai_chat": {"target": 1, "progress": 0, "completed_at": None,
+                        "claimed_at": None, "need_view": True, "credit": 100}}}
+        claims, fired, logs = [], [], []
+        module = self._harness(state, claims, fired)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertEqual([("campaign_starbucks_2026", "ai_chat")], fired)
+        self.assertTrue(any("未下发" in line and "解锁 App" in line for line in logs))
+
+    def test_refire_is_capped_at_remaining_count(self):
+        """判据延迟时不额外多发：重发次数上限 = target - cur。"""
+        state = self._blank_state()
+        claims, fired, logs = [], [], []
+        module = self._harness(state, claims, fired, advance=False)
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        ai_chat = [f for f in fired if f[1] == "ai_chat"]
+        self.assertEqual(3, len(ai_chat))          # target=3，不再 +2
+        self.assertEqual([], claims)
+        self.assertTrue(any("判据延迟未落库" in line for line in logs))
+
+
+class CampaignClaimTests(unittest.TestCase):
+    """领奖口径：claim 成功 ≠ 到账，必须回读到 claimed_at 才算成功。"""
+
+    def _clock(self):
+        class _Clock:
+            @staticmethod
+            def time():
+                return 1700000000.0
+
+            @staticmethod
+            def sleep(_seconds):
+                return None
+        return _Clock
+
+    def _claim(self, rows, http=200, code=0):
+        calls = {"read": 0}
+
+        def cam_tasks(_s, _uid, camp, log=None):
+            calls["read"] += 1
+            return rows
+
+        def call(_s, _uid, method, path, body=None):
+            return http, {"code": code, "msg": "OK"}
+
+        module = load_functions(
+            "_campaign_claim", time=self._clock(), campaign_tasks=cam_tasks,
+            _campaign_call=call,
+            CAMPAIGN_CLAIM_GAP=assignment_value("CAMPAIGN_CLAIM_GAP"),
+            CAMPAIGN_CLAIM_POLL=assignment_value("CAMPAIGN_CLAIM_POLL"),
+        )
+        return module["_campaign_claim"], calls
+
+    def test_claim_confirmed_by_claimed_at(self):
+        claim, calls = self._claim({"desktop_same": {"claimed_at": "2026-11-12T15:39:27+08:00"}})
+        logs = []
+        self.assertTrue(claim(object(), "uid", "campaign_reporter_2026",
+                              "desktop_same", logs.append, 100))
+        self.assertEqual(1, calls["read"])
+        self.assertTrue(any("+100积分" in line for line in logs))
+
+    def test_claim_without_readback_is_not_success(self):
+        """claim 返回 code==0 但没落库：不能记 +积分，留给下一轮。"""
+        claim, calls = self._claim({"desktop_same": {"claimed_at": None}})
+        logs = []
+        self.assertFalse(claim(object(), "uid", "campaign_reporter_2026",
+                               "desktop_same", logs.append, 100))
+        self.assertGreater(calls["read"], 1)          # 反复回读而不是一次就放弃
+        self.assertFalse(any("+100积分" in line for line in logs))
+        self.assertTrue(any("未回读到 claimed_at" in line for line in logs))
+
+    def test_claim_http_error_is_reported(self):
+        claim, calls = self._claim({}, http=500, code=199999)
+        logs = []
+        self.assertFalse(claim(object(), "uid", "campaign_reporter_2026",
+                               "desktop_same", logs.append, 100))
+        self.assertEqual(0, calls["read"])            # 没成功就不回读
+        self.assertTrue(any("HTTP 500" in line for line in logs))
+
+
+class CampaignReadTests(unittest.TestCase):
+    """活动任务读取：失败要能在日志里看见，不能静默当成「活动结束」。"""
+
+    def _tasks(self, http, payload):
+        module = load_functions(
+            "campaign_tasks", _campaign_call=lambda *a, **k: (http, payload))
+        return module["campaign_tasks"]
+
+    def test_success_parses_rows(self):
+        tasks = self._tasks(200, {"code": 0, "data": {
+            "tasks": [{"task_code": "ai_chat", "target_count": 3, "reward_credit": 100,
+                       "need_view": True}],
+            "progress": [{"task_code": "ai_chat", "progress": 1}]}})
+        rows = tasks(object(), "uid", "camp")
+        self.assertEqual(1, rows["ai_chat"]["progress"])
+        self.assertEqual(3, rows["ai_chat"]["target"])
+        self.assertEqual(100, rows["ai_chat"]["credit"])
+
+    def test_http_error_is_logged(self):
+        tasks = self._tasks(500, {"code": 199999, "msg": "internal"})
+        logs = []
+        self.assertEqual({}, tasks(object(), "uid", "camp", logs.append))
+        self.assertTrue(any("读取失败" in line and "HTTP 500" in line for line in logs))
+
+    def test_business_error_is_logged(self):
+        tasks = self._tasks(200, {"code": 100002, "msg": "unauthorized"})
+        logs = []
+        self.assertEqual({}, tasks(object(), "uid", "camp", logs.append))
+        self.assertTrue(any("读取失败" in line and "100002" in line for line in logs))
+
+
+class CampaignEventShapeTests(unittest.TestCase):
+    """活动事件的形状：专家必须带指定 expert_id，技能事件要带 skillId 与对话。"""
+
+    def _fire(self, reports, expert_stub=None):
+        def report(_s, _uid, _nick, events, **kw):
+            reports.append({"events": list(events), "env": kw.get("env_extra")})
+            return 200
+
+        def pick(_s):
+            raise AssertionError("指定专家的活动任务不该回落到通用专家列表")
+
+        def expert_events(uid, nick, eid, ename, conv):
+            return [{"eventCode": "expert_summon_click", "id": eid,
+                     "expertTitle": ename, "conversationId": conv},
+                    {"eventCode": "chat_request_send", "expertId": eid}]
+
+        return load_functions(
+            "_campaign_fire", mp_report=report,
+            mp_chat_event=lambda uid, nick, conv: {"eventCode": "chat_request_send",
+                                                   "conversationId": conv},
+            mp_expert_use_events=expert_stub or expert_events,
+            _campaign_skill_events=lambda sid, sname: [
+                {"eventCode": "skill_info", "id": sname, "skillId": sid,
+                 "skillName": sname}],
+            _mp_pick_expert=pick,
+            _new_conversation_id=lambda: "conv-fixed",
+        )
+
+    def test_reporter_expert_chat_uses_specified_expert(self):
+        reports = []
+        module = self._fire(reports)
+        task = {"task": "expert_chat", "label": "媒体工作助理",
+                "kind": "expert", "expert_id": "ex_NaiDbO06Adf3",
+                "expert_name": "媒体工作助理"}
+        self.assertTrue(module["_campaign_fire"](
+            object(), "uid", "nick", {"code": "campaign_reporter_2026"}, task,
+            lambda _m: None))
+        events = reports[0]["events"]
+        self.assertEqual("ex_NaiDbO06Adf3", events[0]["id"])
+        self.assertEqual("媒体工作助理", events[0]["expertTitle"])
+        self.assertEqual("conv-fixed", events[0]["conversationId"])
+
+    def test_skill_task_reports_slug_name(self):
+        reports = []
+        module = self._fire(reports)
+        task = {"task": "skill_use", "kind": "skill",
+                "skill_id": "skill_2117491159283752960",
+                "skill_name": "interview-material-organizer"}
+        module["_campaign_fire"](object(), "uid", "nick",
+                                 {"code": "campaign_reporter_2026"}, task, lambda _m: None)
+        events = reports[0]["events"]
+        self.assertEqual("skill_info", events[0]["eventCode"])
+        self.assertEqual("skill_2117491159283752960", events[0]["skillId"])
+        # 判据按技能 slug 认人：传中文显示名不计数
+        self.assertEqual("interview-material-organizer", events[0]["id"])
+        self.assertEqual("interview-material-organizer", events[0]["skillName"])
+
+    def test_page_context_is_forwarded(self):
+        reports = []
+        module = self._fire(reports)
+        task = {"task": "ai_chat", "kind": "chat", "times": 1}
+        spec = {"code": "campaign_starbucks_2026",
+                "page": {"pageURL": "subpackages/secondary/starbucks-activity-428/index",
+                         "pageName": "starbucks_activity"}}
+        module["_campaign_fire"](object(), "uid", "nick", spec, task, lambda _m: None)
+        self.assertEqual("starbucks_activity", reports[0]["env"]["pageName"])
+        self.assertTrue(reports[0]["env"]["pageURL"].endswith("starbucks-activity-428/index"))
+
+    def test_skill_events_carry_skill_id_and_conversation(self):
+        module = load_functions(
+            "_campaign_skill_events",
+            _new_conversation_id=lambda: "conv-skill",
+            _new_message_id=lambda: "a" * 32,
+        )
+        info, chat = module["_campaign_skill_events"](
+            "skill_2117491159283752960", "interview-material-organizer")
+        self.assertEqual("skill_info", info["eventCode"])
+        self.assertEqual("skill_2117491159283752960", info["skillId"])
+        self.assertEqual("market", info["skillType"])
+        self.assertEqual("chat_request_send", chat["eventCode"])
+        self.assertEqual("skill_2117491159283752960", chat["skillId"])
+        self.assertEqual(1, chat["skillCount"])
+        self.assertEqual("conv-skill", chat["conversationId"])
+
+    def test_desktop_same_reports_cnb_case_id(self):
+        """desktop_same 只发一条桌面域 playbook_prompt_send，id 用产物目录名。"""
+        cases = assignment_value("CAMPAIGN_CASES")
+        module = load_functions("_campaign_desktop_events", CAMPAIGN_CASES=cases, uuid=uuid)
+        case = cases["content-calendar"]
+        events = module["_campaign_desktop_events"](case)
+        self.assertEqual(1, len(events))
+        event = events[0]
+        self.assertEqual("playbook_prompt_send", event["eventCode"])
+        # 判据按产物目录名认案例：content-calendar / 中文名都不计数
+        self.assertEqual("cnb-content-calendar", event["id"])
+        self.assertEqual("内容发布排期表", event["name"])
+        self.assertEqual("table", event["type"])
+        self.assertEqual(1, event["isOfficial"])
+        self.assertEqual("discover", event["source"])
+        self.assertTrue(event["requestId"])
+        self.assertTrue(event["conversationId"])
+
+    def test_headers_keep_mp_identity(self):
+        module = load_functions(
+            "_campaign_headers", MP_REPORT_HEADERS=assignment_value("MP_REPORT_HEADERS"))
+
+        class _S:
+            headers = {"Authorization": "Bearer tok"}
+
+        headers = module["_campaign_headers"](_S, "uid-1")
+        self.assertEqual("Bearer tok", headers["Authorization"])
+        self.assertEqual("uid-1", headers["X-User-Id"])
+        self.assertEqual("mp-weixin", headers["X-Client-Platform"])
+        self.assertEqual("workbuddy-mp", headers["X-Client-Product"])
+
+
 if __name__ == "__main__":
     unittest.main()
