@@ -2600,5 +2600,76 @@ class TaskDispatchGuardTests(unittest.TestCase):
         self.assertIn("积分: 100 → 150（本轮 +50）", text)
 
 
+class SkillShareTaskTests(unittest.TestCase):
+    """skill_share 口径：只认 skill_share_channel_action(type=link/clipboard/success)。
+
+    实测（2026-11-12）：单独建 open-platform C2C 渠道并 resolve 分享链接，进度不动；
+    上报一条 channel_action 后 10s 内 0/1 → 1/1，领奖 +100c+5e。
+    """
+
+    def _module(self, states, claims, reports):
+        queue = list(states)
+
+        class _Clock:
+            @staticmethod
+            def time():
+                return 1700000000.0
+
+            @staticmethod
+            def sleep(_seconds):
+                return None
+
+        return load_functions(
+            "t_skill_share", time=_Clock,
+            prog=lambda s, code: queue.pop(0) if queue else (None, None, None),
+            report=lambda s, uid, nick, events: reports.append(events),
+            claim=lambda s, code, log: claims.append(code),
+            _market_skill_identity=lambda s: ("skill_2097350077599879168", "润泽小馆·日报撰写"),
+            derive_id=lambda uid, salt: "share-id",
+        )
+
+    def test_skips_when_task_not_dispatched(self):
+        reports, claims, logs = [], [], []
+        module = self._module([(None, None, None)], claims, reports)
+        module["t_skill_share"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], reports)
+        self.assertEqual([], claims)
+        self.assertTrue(any("未下发" in line for line in logs))
+
+    def test_skips_when_already_completed(self):
+        reports, claims, logs = [], [], []
+        module = self._module([("completed", 1, 1)], claims, reports)
+        module["t_skill_share"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], reports)
+        self.assertEqual([], claims)
+
+    def test_reports_channel_action_and_claims_on_progress(self):
+        reports, claims, logs = [], [], []
+        module = self._module(
+            [("accepted", 0, 1), ("completed", 1, 1)], claims, reports)
+        module["t_skill_share"](object(), "uid", "nick", logs.append)
+        self.assertEqual(1, len(reports))
+        events = {event["eventCode"]: event for event in reports[0]}
+        self.assertIn("skill_share_entry_click", events)
+        action = events["skill_share_channel_action"]
+        self.assertEqual("link", action["action"])
+        self.assertEqual("success", action["panelAction"])
+        self.assertEqual("clipboard", action["panelType"])
+        self.assertTrue(action["isSuccessful"])
+        self.assertEqual("skill_2097350077599879168", action["skillId"])
+        self.assertEqual("market", action["skillType"])
+        for key in ("skillName", "id", "cost", "actionAt"):
+            self.assertIn(key, action)
+        self.assertEqual(["skill_share"], claims)
+
+    def test_no_claim_when_progress_stuck(self):
+        reports, claims, logs = [], [], []
+        module = self._module([("accepted", 0, 1), ("accepted", 0, 1)], claims, reports)
+        module["t_skill_share"](object(), "uid", "nick", logs.append)
+        self.assertEqual(1, len(reports))
+        self.assertEqual([], claims)
+        self.assertTrue(any("0/1" in line for line in logs))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -414,13 +414,13 @@ python daily_forward.py daily.log --wx
 
 ## 📦 任务清单
 
-> 单账号每轮按服务端下发逐项核对：**当前为 24 项 = 23 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **38 项**（云端 22 + 小程序 6 + PC 灵感 1 + 互动玩法 8 + 每日签到 1）。
+> 单账号每轮按服务端下发逐项核对：**当前为 25 项 = 24 项自动 + 1 项需人工（关注公众号）**；脚本覆盖能力共 **39 项**（云端 23 + 小程序 6 + PC 灵感 1 + 互动玩法 8 + 每日签到 1）。
 >
 > 📌 另有 **微信公众号关注任务**（`wb_wechat_oa_subscribe_task`）——需真人扫码关注满 24 小时，脚本会检测并提示，不自动完成。
 >
 > 📦 **已归档**（活动结束 / 服务端已下架，代码移出主脚本 → [`archive/`](archive/)）：开学季活动（4 项 + 幸运大转盘）、校园日 `school_season`、公益专家 `Expert_Philanthropy`。
 
-### ☁️ 成长中心任务（22 项云端 · 全自动）
+### ☁️ 成长中心任务（23 项云端 · 全自动）
 
 | # | 任务 | 说明 |
 | :-: | :--- | :--- |
@@ -446,6 +446,7 @@ python daily_forward.py daily.log --wx
 | 20 | `expert_use_douyinyin` | 斗音音（抖音策略师，`ex_FbY5nlWTqDod`，v1.0.2） |
 | 21 | `expert_use_shangjia_xuanchuan` | 商家宣传设计师（商家宣传页与海报设计师，`ex_Weo3x2EZuSDm`，v1.6.0） |
 | 22 | `expert_use_bowangwang` | 播旺旺（直播电商教练，`ex_WZY136wV5aMt`，v1.0.2） |
+| 23 | 分享技能给好友 | 桌面分享事件链（`skill_share_channel_action`：link/clipboard/success + 真实市场技能身份） |
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
 
 > 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余云端任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。

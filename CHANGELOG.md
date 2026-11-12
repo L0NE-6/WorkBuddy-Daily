@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.44（2026-11-12）
+
+- 适配新任务 `skill_share`（分享技能给好友）：上报桌面「技能详情 → 分享 → 复制链接」事件链，`skill_share_channel_action`（`action=link`、`panelAction=success`、`panelType=clipboard`、`isSuccessful=true`）+ 前置 `skill_share_entry_click`，技能身份取真实市场技能（`skillId` + `skillName` + `skillType=market`）。
+- 口径取证：单独走开放平台 `asset-shares/c2c/channels` 建真链接并 `share/resolve`（等价于客户端生成链接 + 浏览器打开）进度不动，成长任务只认上面那条 channel_action；实测 7 账号 0/1 → 1/1 均在 10 秒内到账，领奖 +100 积分 +5 能量。
+- 任务下发时按 `prog` 前置判定：未下发直接跳过、已完成/已领奖不重复上报、上报后 6 秒回读，达标即领奖。
+- `skill_share` 计入「使用类」任务（点亮成长中心热力墙），并登记到任务体检白名单，不再误报「未覆盖新任务」。
+- 新增未下发跳过、已完成跳过、事件形状与领奖、进度不动不领奖 4 项回归；全套 `137` 项测试通过。
+
 ## v3.43（2026-11-11）
 
 - 修复补签到点后状态查询或领取请求发生网络异常时，旧记录一直停在已到点状态、后续 cron 重复请求的问题。

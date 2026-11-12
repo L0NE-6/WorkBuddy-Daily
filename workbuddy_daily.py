@@ -2904,6 +2904,68 @@ def t_template_5(s, uid, nick, log):
     log("   使用5个模板: %s %s/%s" % (st, cur, tgt))
 
 
+def _market_skill_identity(s):
+    """取一个真实市场技能身份：(skillId, skillName)。
+
+    成长系统的技能类任务只校验「技能身份形状」，不校验具体是哪个技能；
+    仍优先用市场列表里的真实 id（与官方客户端分享时上报的一致），
+    列表不可用时退回上游实测可用的兜底组合。
+    """
+    try:
+        r = api_retry(s, "POST", CBDOMAIN + "/v2/operation-platform/market/skill/list",
+                      body={"page": 1, "page_size": 10})
+        skills = (r.json().get("data") or {}).get("skills") or []
+        for sk in skills:
+            sid = str(sk.get("id") or "").strip()
+            if sid and SKILL_NAME in str(sk.get("name") or ""):
+                return sid, str(sk.get("name"))
+        if skills:
+            sid = str(skills[0].get("id") or "").strip()
+            if sid:
+                return sid, str(skills[0].get("name") or SKILL_FALLBACK[1])
+    except Exception:
+        pass
+    return SKILL_FALLBACK
+
+
+def t_skill_share(s, uid, nick, log):
+    """分享技能给好友：桌面「技能详情 → 分享 → 复制链接」事件链。
+
+    上游实测（2026-11-12，单账号 accepted 0/1 → completed 1/1，约 10s）：
+    计数只认 `skill_share_channel_action`，形状为
+    action=link / panelAction=success / panelType=clipboard / isSuccessful=true，
+    技能身份用 market 技能（skillId + skillName + skillType=market）即算一条；
+    `skill_share_entry_click` 是打开分享面板的真实前置事件，一并补上更贴近客户端。
+    任务描述里的「升级 5.9.0 以上、技能列表 → 详情 → 分享」只是引导文案，
+    服务端不校验客户端版本、也不校验是否真有好友打开过链接
+    （已确认：单独走 open-platform `asset-shares/c2c/channels` + `share/resolve`
+    建真链接并打开，进度同样不动）。
+    """
+    st, cur, tgt = prog(s, "skill_share")
+    if st is None:
+        log("   分享技能: 当前任务列表未下发 skill_share，跳过")
+        return
+    if st in ("completed", "claimed") or (cur or 0) >= (tgt or 1):
+        log("   分享技能: 已 %s %s/%s" % (st, cur, tgt))
+        return
+    sid, sname = _market_skill_identity(s)
+    now = int(time.time() * 1000)
+    report(s, uid, nick, [
+        {"eventCode": "skill_share_entry_click", "skillId": sid, "skillName": sname,
+         "skillType": "market", "skillSource": "market", "entry": "skill_detail",
+         "status": "safe", "actionSuccessful": True, "tooltip": "", "clickAt": now},
+        {"eventCode": "skill_share_channel_action", "skillId": sid, "skillName": sname,
+         "skillType": "market", "action": "link", "panelAction": "success",
+         "panelType": "clipboard", "isSuccessful": True, "cost": 0,
+         "id": derive_id(uid, "share"), "actionAt": now}])
+    log("   分享技能: 已上报分享事件（market:%s）" % sname)
+    time.sleep(6)
+    st, cur, tgt = prog(s, "skill_share")
+    log("   分享技能: %s %s/%s" % (st, cur, tgt))
+    if st == "completed" or (cur or 0) >= (tgt or 1):
+        claim(s, "skill_share", log)
+
+
 PLAYBOOK_CASE = {"id": "01-ProductDesign", "name": "产品设计", "type": "document"}
 
 
@@ -4860,7 +4922,7 @@ def t_unknown_tasks(s, uid, nick, log, snapshot=None):
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
-             "template_5", "automation_1", "workstation_expert", "WorkBuddy_Valorant",
+             "template_5", "skill_share", "automation_1", "workstation_expert", "WorkBuddy_Valorant",
              "expert_use_maidehao", "expert_use_douyinyin",
              "expert_use_shangjia_xuanchuan", "expert_use_bowangwang",
              "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
@@ -5481,7 +5543,7 @@ def run_account(idx, acc, do_desktop):
         # 「使用类」任务才会给成长中心记活跃（热力墙）。全被过滤掉时明确提醒：
         # 签到只给积分、不点热力墙——别把页面上的「开始使用以点亮今日热力墙」当成签到失败
         _usage = {"chat_5", "model_chat_glm5.2", "desktop", "richmeow_chat", "skill_1", "black_cat",
-                  "expert_5", "expert_team_use_3", "template_5", "create_canvas", "playbook_prompt",
+                  "expert_5", "expert_team_use_3", "template_5", "skill_share", "create_canvas", "playbook_prompt",
                   "sequential_tasks_1", "sequential_tasks_3", "sequential_tasks_5",
                   "automation_1", "library_read", "hp_appearance", "buddy_app", "buddy_app_qq",
                   "expert_lighthouse", "workbuddy_valorant", "expert_use_maidehao",
@@ -5518,6 +5580,7 @@ def run_account(idx, acc, do_desktop):
          lambda: t_canvas_automation(s, uid, nick, log))
     _run("召唤5次专家", ["expert_5"], lambda: t_expert_5(s, uid, nick, log))
     _run("使用5个模板", ["template_5"], lambda: t_template_5(s, uid, nick, log))
+    _run("分享技能给好友", ["skill_share"], lambda: t_skill_share(s, uid, nick, log))
     _run("GLM-5.2/和AI聊天5次", ["Model_chat_GLM5.2", "chat_5"], lambda: t_glm52(s, uid, nick, log))
     _run("夜猫子", ["black_cat"], lambda: t_black_cat(s, uid, nick, log))
     _run("腾讯轻量云专家", ["Expert_lighthouse"], lambda: t_lighthouse(s, uid, nick, log))
