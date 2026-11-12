@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.45
+🌱 WorkBuddy Daily - 全能签到脚本 v3.46
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -2673,11 +2673,18 @@ def t_accept_all(s, uid, nick, log, rows=None, done_codes=None):
 def t_team_3(s, uid, nick, log):
     """召唤3次专家团：真实团队对话+全字段遥测"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    st, cur, tgt = prog(s, "Expert_team_use_3")
+    if st is None:
+        log("   Expert_team_use_3: 当前任务列表未下发（可能已下线），跳过")
+        return
     teams = get_team_experts(10)
     if not teams:
         return
     for rd in range(3):
         st, cur, tgt = prog(s, "Expert_team_use_3")
+        if st is None:
+            log("   Expert_team_use_3: 当前任务列表未下发（可能已下线），跳过")
+            break
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or 3):
             break
         team = teams[rd % len(teams)]
@@ -2864,8 +2871,11 @@ def t_black_cat(s, uid, nick, log):
 def t_expert_5(s, uid, nick, log):
     """召唤5次专家：普通专家遥测"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    experts = get_normal_experts(20)
     st0, cur0, tgt0 = prog(s, "expert_5")
+    if st0 is None:
+        log("   expert_5: 当前任务列表未下发（可能已下线），跳过")
+        return
+    experts = get_normal_experts(20)
     need = max(0, (tgt0 or 5) - (cur0 or 0))
     if st0 in ("completed", "claimed"):
         need = 0
@@ -2908,9 +2918,16 @@ def t_template_5(s, uid, nick, log):
     template_id 服务端不校验真实性，但用真实场景 id 更稳（旧版写死的 01-ProductDesign
     形态并不存在于线上场景表）。
     """
+    initial_state = prog(s, "template_5")
+    if initial_state[0] is None:
+        log("   template_5: 当前任务列表未下发（可能已下线），跳过")
+        return
     scenes = _fetch_scenes(s)[:5]
     for tid, tname in scenes:
         st, cur, tgt = prog(s, "template_5")
+        if st is None:
+            log("   template_5: 当前任务列表未下发（可能已下线），跳过")
+            break
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or 5):
             break
         rid = _new_message_id()
@@ -3304,18 +3321,51 @@ _INFO_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBuddy
 INFO_PATH = os.path.join(_INFO_DIR, "workbuddy-desktop-ai.info")
 if not os.path.exists(INFO_PATH):  # 旧版桌面端回落
     INFO_PATH = os.path.join(_INFO_DIR, "workbuddy-desktop.info")
+_SWAP_MARK = "_wb_all_swapped"
 SESSION_DIRS = [os.path.join(os.path.expanduser("~"), ".workbuddy-ai", "sessions"),
                 os.path.join(os.path.expanduser("~"), ".workbuddy", "sessions")]
 
 
 def swap_info(tok):
-    """把 .info 认证换成目标账号（自动备份）"""
+    """把 .info 认证换成目标账号（自动备份）。
+
+    返回 False 表示认证文件不存在、不可读或令牌无效，调用方必须跳过换血流程。
+    """
+    if not os.path.exists(INFO_PATH):
+        return False
+    try:
+        pay = tok.split(".")[1]
+        pay += "=" * (4 - len(pay) % 4)
+        j = json.loads(base64.urlsafe_b64decode(pay))
+    except Exception:
+        return False
     bak = INFO_PATH + ".wb_all_bak"
-    if not os.path.exists(bak):
-        shutil.copy(INFO_PATH, bak)
-    d = json.load(open(INFO_PATH, encoding="utf-8"))
-    pay = tok.split(".")[1]; pay += "=" * (4 - len(pay) % 4)
-    j = json.loads(base64.urlsafe_b64decode(pay))
+    try:
+        with open(INFO_PATH, encoding="utf-8") as handle:
+            d = json.load(handle)
+    except Exception:
+        return False
+    if d.get(_SWAP_MARK):
+        # 上次运行异常退出留下的换血态：先还原真认证，再建立本轮备份。
+        if not os.path.exists(bak):
+            return False
+        try:
+            shutil.copy2(bak, INFO_PATH)
+            with open(INFO_PATH, encoding="utf-8") as handle:
+                d = json.load(handle)
+        except Exception:
+            return False
+    else:
+        # 桌面端已改写文件（通常是用户重新登录），旧备份已经过期。
+        if os.path.exists(bak):
+            try:
+                os.remove(bak)
+            except OSError:
+                return False
+    try:
+        shutil.copy2(INFO_PATH, bak)
+    except OSError:
+        return False
     d["auth"]["accessToken"] = tok
     d["auth"]["refreshToken"] = ""
     d["auth"]["expiresAt"] = j.get("exp", 0) * 1000
@@ -3331,14 +3381,45 @@ def swap_info(tok):
     for k in ("accounts", "allAccounts"):
         if isinstance(d.get(k), list):
             for a in d[k]: fix(a, False)
-    json.dump(d, open(INFO_PATH, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    d[_SWAP_MARK] = True
+    tmp = INFO_PATH + ".wb_all_tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(d, handle, ensure_ascii=False, indent=2)
+        os.replace(tmp, INFO_PATH)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def restore_info():
+    """还原被脚本换过的认证文件，绝不覆盖用户重新登录后的认证。"""
     bak = INFO_PATH + ".wb_all_bak"
-    if os.path.exists(bak):
-        shutil.copy(bak, INFO_PATH)
+    try:
+        with open(INFO_PATH, encoding="utf-8") as handle:
+            d = json.load(handle)
+    except Exception:
+        return False
+    if not d.get(_SWAP_MARK):
+        if os.path.exists(bak):
+            try:
+                os.remove(bak)
+            except OSError:
+                pass
+        return True
+    if not os.path.exists(bak):
+        return False
+    try:
+        shutil.copy2(bak, INFO_PATH)
         os.remove(bak)
+    except OSError:
+        return False
+    return True
 
 
 def ensure_local_skill():
@@ -3358,7 +3439,6 @@ def ensure_local_skill():
 
 def daemon_chat(prompt, blocks=None, meta_extra=None, deadline=280):
     """连接本机守护进程 ACP 发一次对话，返回回复文本"""
-    import websocket
     s = requests.Session(); s.trust_env = False
     headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
                "acp-connection-id": str(uuid.uuid4())}
@@ -3482,8 +3562,8 @@ def restart_desktop():
 
 def cdp_ui_send(prompt):
     """通过 CDP 在桌面端 UI 用 Slate beforeinput 发送聊天（新账号兜底）"""
-    import websocket
     try:
+        import websocket
         r = requests.get("http://127.0.0.1:9222/json", timeout=5, proxies={"http": None, "https": None})
         pt = [x for x in r.json() if x.get("type") == "page"][0]
         ws = websocket.create_connection(pt["webSocketDebuggerUrl"], timeout=10, suppress_origin=True)
@@ -3553,37 +3633,43 @@ def t_desktop_tasks(s, uid, nick, tok, log, need_rich, need_skill):
             except Exception:
                 pass
         ensure_local_skill()
-        swap_info(tok)
-        url = restart_desktop()
-        if not url:
-            log("   ⚠️ 桌面端守护进程未就绪，降级为指纹上报...")
-            restore_info()
-            subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
+        if not swap_info(tok):
+            log("   ⚠️ 未找到可用的桌面端认证文件，降级为指纹上报...")
             _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill)
             return
-        time.sleep(8)
-        if need_rich:
-            txt = daemon_chat("你好，请用一句话介绍你自己")
-            if not txt:
-                log("   守护进程会话未就绪，改用 CDP UI 发送...")
-                cdp_ui_send("你好，请用一句话介绍你自己")
-            log("   桌面对话: %s字" % len(txt))
+        try:
+            url = restart_desktop()
+            if not url:
+                log("   ⚠️ 桌面端守护进程未就绪，降级为指纹上报...")
+                _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill)
+                return
             time.sleep(8)
-        if need_skill:
-            blocks = [{"type": "resource_link", "uri": "skill://" + SKILL_NAME, "title": SKILL_NAME,
-                       "name": SKILL_NAME, "_meta": {"mentionType": "skill", "skillName": SKILL_NAME}},
-                      {"type": "text", "text": "你必须通过技能系统正式加载（load）该技能，加载成功后回答：技能已加载"}]
-            txt = daemon_chat("", blocks=blocks)
-            if not txt:
-                log("   守护进程不可用，改用 CDP UI 技能调用...")
-                cdp_ui_send("/" + SKILL_NAME + " 请按技能说明回答OK")
-            log("   技能加载: %s" % ("成功" if "加载" in txt else "回复%d字" % len(txt)))
-            time.sleep(8)
-        restore_info()
-        subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
-        time.sleep(3)
-        subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
-        time.sleep(5)
+            if need_rich:
+                txt = daemon_chat("你好，请用一句话介绍你自己")
+                if not txt:
+                    log("   守护进程会话未就绪，改用 CDP UI 发送...")
+                    cdp_ui_send("你好，请用一句话介绍你自己")
+                log("   桌面对话: %s字" % len(txt))
+                time.sleep(8)
+            if need_skill:
+                blocks = [{"type": "resource_link", "uri": "skill://" + SKILL_NAME, "title": SKILL_NAME,
+                           "name": SKILL_NAME, "_meta": {"mentionType": "skill", "skillName": SKILL_NAME}},
+                          {"type": "text", "text": "你必须通过技能系统正式加载（load）该技能，加载成功后回答：技能已加载"}]
+                txt = daemon_chat("", blocks=blocks)
+                if not txt:
+                    log("   守护进程不可用，改用 CDP UI 技能调用...")
+                    cdp_ui_send("/" + SKILL_NAME + " 请按技能说明回答OK")
+                log("   技能加载: %s" % ("成功" if "加载" in txt else "回复%d字" % len(txt)))
+                time.sleep(8)
+        finally:
+            # 认证还原必须覆盖异常与超时路径，不能把桌面端留在脚本账号。
+            if restore_info():
+                subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
+                time.sleep(3)
+                subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
+                time.sleep(5)
+            else:
+                log("   ❌ 桌面认证还原失败，保留当前桌面进程并停止自动重启")
     else:
         # ===== 非 Windows：指纹上报降级 =====
         log("   🖥️ 非 Windows 环境，使用指纹上报模式...")
@@ -4043,19 +4129,28 @@ def t_workstation(s, uid, nick, log, tok):
         return
     log("   检测到工作台搭建师任务，尝试桌面换血对话...")
     # 桌面换血对话（复用 desktop 流程）
-    swap_info(tok)
-    restart_desktop()
-    time.sleep(8)
-    blocks = [{"type": "resource_link", "uri": "expert://WorkspaceBuilder", "title": "工作台搭建师",
-               "name": "工作台搭建师", "_meta": {"mentionType": "expert", "expertId": "WorkspaceBuilder"}},
-              {"type": "text", "text": "你好，请介绍你能帮我搭建什么工作台，回答OK即可"}]
-    txt = daemon_chat("", blocks=blocks)
-    log("   工作台搭建师对话: %s字" % len(txt))
-    restore_info()
-    subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
-    time.sleep(3)
-    subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
-    time.sleep(5)
+    if not swap_info(tok):
+        log("   工作台搭建师: 未找到可用的桌面端认证文件，跳过")
+        return
+    try:
+        url = restart_desktop()
+        if not url:
+            log("   工作台搭建师: 桌面端守护进程未就绪，跳过")
+            return
+        time.sleep(8)
+        blocks = [{"type": "resource_link", "uri": "expert://WorkspaceBuilder", "title": "工作台搭建师",
+                   "name": "工作台搭建师", "_meta": {"mentionType": "expert", "expertId": "WorkspaceBuilder"}},
+                  {"type": "text", "text": "你好，请介绍你能帮我搭建什么工作台，回答OK即可"}]
+        txt = daemon_chat("", blocks=blocks)
+        log("   工作台搭建师对话: %s字" % len(txt))
+    finally:
+        if restore_info():
+            subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
+            time.sleep(3)
+            subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
+            time.sleep(5)
+        else:
+            log("   工作台搭建师: 桌面认证还原失败，保留当前桌面进程并停止自动重启")
     log("   工作台搭建师: %s %s/%s" % prog(s, "workstation_expert"))
 
 

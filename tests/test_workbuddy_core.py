@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -2586,6 +2587,69 @@ class TaskDispatchGuardTests(unittest.TestCase):
         self.assertEqual([], sequences)
         self.assertEqual([], reports)
 
+    def test_team_task_skips_when_not_dispatched(self):
+        chats, reports, logs = [], [], []
+        module = load_functions(
+            "t_team_3", sys=sys, os=os, uuid=uuid, json=json,
+            __file__=str(SOURCE_PATH),
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            get_team_experts=lambda _limit: [{"id": "team-1", "name": "团队"}],
+            prog=lambda _session, _code: (None, None, None),
+            webchat=lambda *args, **kwargs: chats.append(args) or ("cid", "txt"),
+            report=lambda *args, **kwargs: reports.append(args),
+        )
+        module["t_team_3"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], chats)
+        self.assertEqual([], reports)
+        self.assertTrue(any("Expert_team_use_3" in line and "未下发" in line for line in logs))
+
+    def test_expert_task_skips_when_not_dispatched(self):
+        reports, logs = [], []
+        expert_lookups = []
+        module = load_functions(
+            "t_expert_5", sys=sys, os=os, uuid=uuid,
+            __file__=str(SOURCE_PATH),
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            get_normal_experts=lambda limit: (
+                expert_lookups.append(limit) or [{"id": "expert-1", "name": "专家"}]),
+            prog=lambda _session, _code: (None, None, None),
+            report=lambda *args, **kwargs: reports.append(args),
+        )
+        module["t_expert_5"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], reports)
+        self.assertEqual([], expert_lookups)
+        self.assertTrue(any("expert_5" in line and "未下发" in line for line in logs))
+
+    def test_template_task_skips_when_not_dispatched(self):
+        reports, logs = [], []
+        module = load_functions(
+            "t_template_5", uuid=uuid,
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            _fetch_scenes=lambda _session: (_ for _ in ()).throw(
+                AssertionError("未下发任务不应请求场景列表")),
+            prog=lambda _session, _code: (None, None, None),
+            report=lambda *args, **kwargs: reports.append(args),
+            _new_message_id=lambda: "request-id",
+        )
+        module["t_template_5"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], reports)
+        self.assertTrue(any("template_5" in line and "未下发" in line for line in logs))
+
+    def test_expert_task_still_runs_when_dispatched(self):
+        reports = []
+        module = load_functions(
+            "t_expert_5", sys=sys, os=os, uuid=uuid,
+            __file__=str(SOURCE_PATH),
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            get_normal_experts=lambda _limit: [{"id": "expert-1", "name": "专家"}],
+            prog=lambda _session, _code: ("accepted", 4, 5),
+            report=lambda *args, **kwargs: reports.append(args),
+            _new_message_id=lambda: "request-id",
+            _new_conversation_id=lambda: "conversation-id",
+        )
+        module["t_expert_5"](object(), "uid", "nick", lambda _message: None)
+        self.assertEqual(1, len(reports))
+
     def test_build_summary_shows_credit_before_after_and_delta(self):
         module = load_functions(
             "build_summary", "task_cn", "mask_phone", "_clean_num",
@@ -2720,6 +2784,204 @@ class WebReportAndBuddyAppTests(unittest.TestCase):
 
         self.assertEqual(["Library_read"], claims)
         self.assertTrue(any("completed 1/1" in line for line in logs))
+
+
+class DesktopAuthSafetyTests(unittest.TestCase):
+    def _auth_state(self, nickname, uid):
+        return {
+            "account": {
+                "uid": uid,
+                "nickname": nickname,
+                "phoneNumber": nickname + "-phone",
+                "lastLogin": True,
+            },
+            "auth": {
+                "accessToken": nickname + "-AT",
+                "refreshToken": nickname + "-RT",
+                "expiresAt": 1,
+            },
+            "accounts": [],
+        }
+
+    def _swap_module(self, info_path):
+        return load_functions(
+            "swap_info", "restore_info",
+            INFO_PATH=info_path,
+            _SWAP_MARK="_wb_all_swapped",
+            os=os, json=json, shutil=shutil, base64=base64,
+        )
+
+    def test_swap_and_restore_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info_path = os.path.join(tmp, "workbuddy-desktop.info")
+            original = self._auth_state("REAL", "real-uid")
+            Path(info_path).write_text(json.dumps(original), encoding="utf-8")
+            module = self._swap_module(info_path)
+            token = jwt_token({"sub": "script-uid", "exp": 2000000000})
+
+            self.assertTrue(module["swap_info"](token))
+            swapped = json.loads(Path(info_path).read_text(encoding="utf-8"))
+            self.assertTrue(swapped["_wb_all_swapped"])
+            self.assertEqual("script-uid", swapped["account"]["uid"])
+            self.assertEqual(token, swapped["auth"]["accessToken"])
+            self.assertTrue(os.path.exists(info_path + ".wb_all_bak"))
+
+            self.assertTrue(module["restore_info"]())
+            restored = json.loads(Path(info_path).read_text(encoding="utf-8"))
+            self.assertEqual(original, restored)
+            self.assertFalse(os.path.exists(info_path + ".wb_all_bak"))
+
+    def test_stale_backup_does_not_overwrite_user_relogin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info_path = os.path.join(tmp, "workbuddy-desktop.info")
+            user_a = self._auth_state("USER_A", "uid-a")
+            user_b = self._auth_state("USER_B", "uid-b")
+            Path(info_path).write_text(json.dumps(user_a), encoding="utf-8")
+            module = self._swap_module(info_path)
+            token = jwt_token({"sub": "script-uid", "exp": 2000000000})
+
+            self.assertTrue(module["swap_info"](token))
+            Path(info_path).write_text(json.dumps(user_b), encoding="utf-8")
+            self.assertTrue(module["swap_info"](token))
+            backup = json.loads(Path(info_path + ".wb_all_bak").read_text(encoding="utf-8"))
+            self.assertEqual(user_b, backup)
+
+            self.assertTrue(module["restore_info"]())
+            restored = json.loads(Path(info_path).read_text(encoding="utf-8"))
+            self.assertEqual(user_b, restored)
+
+    def test_restore_refuses_to_overwrite_unmarked_user_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info_path = os.path.join(tmp, "workbuddy-desktop.info")
+            current = self._auth_state("CURRENT", "uid-current")
+            stale = self._auth_state("STALE", "uid-stale")
+            Path(info_path).write_text(json.dumps(current), encoding="utf-8")
+            Path(info_path + ".wb_all_bak").write_text(json.dumps(stale), encoding="utf-8")
+            module = self._swap_module(info_path)
+
+            self.assertTrue(module["restore_info"]())
+            restored = json.loads(Path(info_path).read_text(encoding="utf-8"))
+            self.assertEqual(current, restored)
+            self.assertFalse(os.path.exists(info_path + ".wb_all_bak"))
+
+    def test_swap_returns_false_without_desktop_auth_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._swap_module(os.path.join(tmp, "missing.info"))
+            self.assertFalse(module["swap_info"](
+                jwt_token({"sub": "script-uid", "exp": 2000000000})))
+
+    def test_workstation_skips_daemon_when_restart_returns_none(self):
+        daemon_calls = []
+        restore_calls = []
+
+        class Proc:
+            @staticmethod
+            def run(*_args, **_kwargs):
+                return None
+
+            @staticmethod
+            def Popen(*_args, **_kwargs):
+                return None
+
+        module = load_functions(
+            "t_workstation",
+            sys=types.SimpleNamespace(platform="win32"),
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            subprocess=Proc,
+            prog=lambda _session, _code: ("accepted", 0, 1),
+            swap_info=lambda _token: True,
+            restore_info=lambda: restore_calls.append(True) or True,
+            restart_desktop=lambda: None,
+            daemon_chat=lambda *args, **kwargs: daemon_calls.append(args) or "txt",
+        )
+        logs = []
+        module["t_workstation"](object(), "uid", "nick", logs.append, "token")
+        self.assertEqual([], daemon_calls)
+        self.assertEqual([True], restore_calls)
+        self.assertTrue(any("守护进程未就绪" in line for line in logs))
+
+    def test_desktop_exception_still_restores_auth(self):
+        restore_calls = []
+
+        class Proc:
+            @staticmethod
+            def run(*_args, **_kwargs):
+                return None
+
+            @staticmethod
+            def Popen(*_args, **_kwargs):
+                return None
+
+        module = load_functions(
+            "t_desktop_tasks",
+            sys=types.SimpleNamespace(platform="win32"),
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            subprocess=Proc,
+            ensure_local_skill=lambda: None,
+            swap_info=lambda _token: True,
+            restore_info=lambda: restore_calls.append(True) or True,
+            restart_desktop=lambda: "http://daemon",
+            daemon_chat=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+            cdp_ui_send=lambda _prompt: False,
+            _desktop_fingerprint_fallback=lambda *args, **kwargs: None,
+            SKILL_NAME="algorithmic-trading",
+            claim=lambda *args, **kwargs: None,
+            prog=lambda _session, _code: ("accepted", 0, 1),
+        )
+        with self.assertRaises(RuntimeError):
+            module["t_desktop_tasks"](
+                object(), "uid", "nick", "token", lambda _message: None, True, False)
+        self.assertEqual([True], restore_calls)
+
+    def test_restore_failure_does_not_restart_desktop(self):
+        process_calls = []
+
+        class Proc:
+            @staticmethod
+            def run(*args, **kwargs):
+                process_calls.append(("run", args, kwargs))
+
+            @staticmethod
+            def Popen(*args, **kwargs):
+                process_calls.append(("Popen", args, kwargs))
+
+        module = load_functions(
+            "t_desktop_tasks",
+            sys=types.SimpleNamespace(platform="win32"),
+            time=types.SimpleNamespace(sleep=lambda _seconds: None),
+            subprocess=Proc,
+            ensure_local_skill=lambda: None,
+            swap_info=lambda _token: True,
+            restore_info=lambda: False,
+            restart_desktop=lambda: "http://daemon",
+            daemon_chat=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+            cdp_ui_send=lambda _prompt: False,
+            _desktop_fingerprint_fallback=lambda *args, **kwargs: None,
+            SKILL_NAME="algorithmic-trading",
+            claim=lambda *args, **kwargs: None,
+            prog=lambda _session, _code: ("accepted", 0, 1),
+        )
+        logs = []
+        with self.assertRaises(RuntimeError):
+            module["t_desktop_tasks"](
+                object(), "uid", "nick", "token", logs.append, True, False)
+        self.assertEqual([], process_calls)
+        self.assertTrue(any("认证还原失败" in line for line in logs))
+
+    def test_cdp_missing_websocket_dependency_is_a_visible_skip(self):
+        module = load_functions(
+            "cdp_ui_send", requests=requests, time=time, json=json,
+            uuid=uuid,
+        )
+        real_import = __import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "websocket":
+                raise ImportError("missing websocket-client")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=guarded_import):
+            self.assertFalse(module["cdp_ui_send"]("hello"))
 
 
 class SkillShareTaskTests(unittest.TestCase):

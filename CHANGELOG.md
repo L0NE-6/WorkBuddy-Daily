@@ -1,5 +1,22 @@
 # 更新日志
 
+## v3.46（2026-11-12）
+
+- 桌面认证换血增加 `_wb_all_swapped` 标记：仅还原带脚本标记的认证文件，
+  用户重新登录后的认证不会被旧备份覆盖。
+- `swap_info()` 改为返回 bool，并处理认证文件缺失、不可读、令牌无效和原子写入
+  失败；没有可用桌面认证时直接降级为指纹上报，不再抛 `FileNotFoundError`。
+- `t_desktop_tasks()` / `t_workstation()` 的认证还原放入 `finally`，守护进程超时、
+  会话异常或依赖错误退出时也会恢复原登录态并重启桌面端。
+- `t_workstation()` 检查 `restart_desktop()` 返回值，不再在守护进程不可用时
+  逐账号空等 `daemon_chat()` 的 280 秒 deadline。
+- `t_team_3()` / `t_expert_5()` / `t_template_5()` 增加任务未下发守卫，避免
+  网络抖动或任务下线时继续发送真实对话/遥测。
+- 删除 `daemon_chat()` 中无用的 `websocket` 导入，`cdp_ui_send()` 将可选依赖
+  导入移入异常边界；`requirements.txt` 补充 `websocket-client`。
+- 新增认证还原、旧备份隔离、异常清理、工作台空等和任务守卫回归；全套
+  `155` 项测试通过。
+
 ## v3.45（2026-11-12）
 
 - 修复 `Library_read`：`/v2/report` 改为服务端要求的裸数组事件体，不再使用
