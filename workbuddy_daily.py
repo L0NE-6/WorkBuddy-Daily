@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.49
+🌱 WorkBuddy Daily - 全能签到脚本 v3.50
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -6354,7 +6354,8 @@ def run_account(idx, acc, do_desktop):
         msgs.append(line)
 
     summary = {"idx": idx, "note": acc.get("note", ""), "credits": "", "usage": "", "growth": "",
-               "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
+               "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?",
+               "source_counts": {}}
     tok = acc.get("access_token", "")
     if not tok:
         log("")
@@ -6603,12 +6604,23 @@ def run_account(idx, acc, do_desktop):
         st_all, claim_receipts)
     prof2 = (_json_or_empty(s.get(BASE + "/v2/activity/growth/profile", timeout=25,
                                        verify=False)).get("data") or {})
+    source_counts = {
+        key: len((source or {}).get("rows") or [])
+        for key, source in (task_snapshot.get("sources") or {}).items()
+    }
+    source_labels = (("desktop", "桌面"), ("mp", "小程序"), ("level", "等级"))
+    source_text = " / ".join(
+        "%s%d" % (label, source_counts[key])
+        for key, label in source_labels if key in source_counts
+    )
     summary.update({"done": done, "total": len(st_all), "rest": rest,
+                    "source_counts": source_counts,
                     "level": prof2.get("level", "?"), "energy": energy})
     # 签到结论：供 WORKBUDDY_NOTIFY 判断本轮是否「正常」
     summary["checked_in"] = bool(_checkin_state.get("checked_in"))
-    log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (
+    log("🏁 %s: 桌面成长任务完成%s/%s%s 等级%s 剩余: %s" % (
         mask_phone(acc.get("note", "")), done, len(st_all),
+        ("（任务行 %s）" % source_text) if source_text else "",
         prof2.get("level", "?"),
         ", ".join(task_cn(code) for code in rest) if rest else "无"))
     return msgs, summary
@@ -6635,6 +6647,12 @@ def build_summary(summaries):
         energy = sm.get("energy", "?")
         level = sm.get("level", "?")
         streak = sm.get("streak", "?")
+        source_counts = sm.get("source_counts") or {}
+        source_labels = (("desktop", "桌面"), ("mp", "小程序"), ("level", "等级"))
+        source_text = " / ".join(
+            "%s%d" % (label, source_counts[key])
+            for key, label in source_labels if key in source_counts
+        )
         note = sm.get("note", "")[:16]
         rest = sm.get("rest") or []
         # 翻译任务代码为中文
@@ -6653,16 +6671,19 @@ def build_summary(summaries):
         lines.append("   📊 %s" % (usage if usage else "暂无数据"))
         lines.append("   🌱 等级%s | 签到连签%s天 | 活跃连签%s天 | 能量%s"
                      % (level, sm.get("checkin_streak", "?"), streak, energy))
+        if source_text:
+            lines.append("   🧭 任务行: %s" % source_text)
         if str(streak).strip() in ("0", "0.0"):
             lines.append("      ℹ️ 活跃连签=0 属正常：它由成长中心「使用事件（热力墙）」驱动，与积分签到无关")
         if rest_cn:
-            lines.append("   ⏳ 未完成: %s" % "、".join(rest_cn))
+            lines.append("   ⏳ 桌面任务未完成: %s" % "、".join(rest_cn))
         else:
-            lines.append("   ✅ 全部完成！")
+            lines.append("   ✅ 桌面成长任务已全部完成！")
         lines.append("")
 
     lines.append("📊 ══ 总计 ══")
-    lines.append("👥 共%d个账号，任务完成 %d/%d 项" % (len(summaries), total_done, total_tasks))
+    lines.append("👥 共%d个账号，桌面成长任务完成 %d/%d 项"
+                 % (len(summaries), total_done, total_tasks))
 
     # 汇总待办分布（中文）
     all_rest = {}
