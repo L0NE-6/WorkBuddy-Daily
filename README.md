@@ -453,7 +453,7 @@ python daily_forward.py daily.log --wx
 
 > 🔗 **前置条件**：`first_buddy`（领取Buddy）是其余云端任务的登记前置——服务端对**没有 Buddy 实例**的账号会拒绝这些任务的 accept（`prerequisite not met: first_buddy (no buddy instance)`）。脚本已把领养链路提到云端任务最前面，并在 accept 报前置错误时**自动补跑前置再重试登记**。
 >
-> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13、四个 `expert_use_*` 至 **2026-11-20**），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；**未完成且 7 天内到期 / 已过期**的任务打印 ⏰ 提醒，避免白白错过奖励。
+> ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13、四个 `expert_use_*` 至 **2026-11-20**），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；最终补领后按**终态未完成/未领奖**（不含 `claimed`、`claimed=true` 和本轮已确认领奖回执）检查 7 天内到期 / 已过期任务并打印 ⏰ 提醒，避免用开跑前快照误报。
 >
 > 🔎 **三源任务发现**：桌面 `/v2/activity/growth/tasks`、小程序 `/v2`、等级族无 `/v2` 的 `/activity/growth/tasks` 并不互为超集。脚本每次合并三套清单；`first_chat / skill_installed / wechat_linked / expert_summoned / template_used` 只发现和分类，其中微信绑定明确标记为客户端操作。
 
@@ -570,7 +570,7 @@ python daily_forward.py daily.log --wx
 
 - **📊 全中文报告**：任务代码自动翻译成中文（如 `skill_1` → 尝鲜热门技能），每账号独立分块 + 总计 + 待办分布，一目了然。
 - **🔍 未覆盖任务检测**：每次运行扫描成长任务列表，发现脚本尚未适配的新任务会打印 ⚠️ 提示，方便及时更新脚本。
-- **⏰ 任务到期预警**：读任务行的 `valid_end`，对「未完成 + 7 天内到期 / 已过期」的任务打印 ⏰ 提醒（与签到活动到期预警同一套思路）。
+- **⏰ 任务到期预警**：读最终补领后的任务行 `valid_end`，对「未完成/未领奖 + 7 天内到期 / 已过期」的任务打印 ⏰ 提醒，并与推送完成度共用同一份终态数据。
 - **♻️ 幂等补缺**：所有任务先查进度再执行，已完成 / 已领取直接跳过，重复运行零副作用。
 - **🔗 真实技能分享**：按 WorkBuddy 5.9.3 客户端实证链路调用 Open Platform `asset-shares/c2c/channels`，创建真实分享链接后再上报官方渠道事件；只以服务端 `1/1` 和领取回执判定成功。
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。

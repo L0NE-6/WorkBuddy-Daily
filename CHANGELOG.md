@@ -1,5 +1,11 @@
 # 更新日志
 
+## 未发布
+
+- 修复 Issue #57：任务有效期提醒不再复用开跑前的调度快照，改为在最终补领后读取终态任务表。
+- 提醒与推送完成度统一按 `claimed`、`claimed=true` 或本轮已确认领奖回执判定；`completed` 但未领奖仍提示，`locked`、未下发和活动域任务不混入。
+- 新增调度快照误报、领取状态、完成未领奖、活动任务、锁定任务、无任务行的回归测试。
+
 ## v3.48（2026-11-13）
 
 - 打通星巴克 `app`（原判定「必须真机」，已推翻）：判据是「agentos 云端会话真跑完一轮对话」，与手机型号、设备登录无关。脚本按 App 身份头（`X-Client-Product: workbuddy-app` / `X-Client-Platform: android` / `WorkBuddyApp/2.8.0`）建会话，再用一次 `POST {boxUrl}/acp/bootstrap?includeUserEcho=true` 把 `initialize + session/new + session/prompt` 一起提交；只认结构化 `stopReason=end_turn`，EOF、截断、超时和错误事件均判失败。

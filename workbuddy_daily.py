@@ -153,7 +153,7 @@
      并做活动到期预警：距 end_time ≤7 天或活动已关闭时，日志给出 ⚠️ 提示
    · 两种连签分开显示：签到连签（积分签到活动 streak_days）与活跃连签（成长中心热力墙
      growth/streak）是两套不同指标，日志/推送统一写作「签到连签N天 | 活跃连签N天」，不再混淆
-   · 任务到期预警：未完成任务在 valid_end 前 7 天内（或已过期）时打印 ⏰ 提醒
+    · 任务到期预警：终态未完成/未领奖任务在 valid_end 前 7 天内（或已过期）时打印 ⏰ 提醒
    · mp 定时任务：Sequential_Tasks_4 用官方 mp 指纹形状（mode=CLOUD、无 rrule），失败回落桌面域
    · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
@@ -1766,6 +1766,21 @@ def _claim_response_ok(response, payload):
         bool(data.get("already_claimed"))
         or any(marker in message for marker in ("already", "已领取", "已领过"))))
     return success or already, data, message
+
+
+def _claim_receipt_is_confirmed(receipt):
+    """回执是否足以证明已经领奖；与终态计分保持同一判据。"""
+    if not isinstance(receipt, dict):
+        return False
+    if receipt.get("readback_claimed"):
+        return True
+
+    class ReceiptResponse:
+        status_code = 200
+
+    ok, _, _ = _claim_response_ok(
+        ReceiptResponse(), {"code": 0, "data": receipt})
+    return ok
 
 
 def claim(s, code, log):
@@ -5821,12 +5836,11 @@ def t_skill_share(s, uid, nick, log, snapshot=None):
 
 
 def t_unknown_tasks(s, uid, nick, log, snapshot=None):
-    """任务列表体检：动态发现新任务 + 未完成任务的有效期预警
+    """任务列表体检：动态发现尚未覆盖的新任务。
 
-    服务端任务行带 valid_start / valid_end（如 Buddy_App_QQ 至 2026-10-10）——
-    过期后就领不到了，所以对「未完成且 7 天内到期 / 已过期」的任务给出 ⏰ 提示。
     桌面 /v2、小程序 /v2、等级族无 /v2 三源并不互为超集，合并后按 code 去重；
-    单侧失败不阻断另一侧或后续补领。
+    单侧失败不阻断另一侧或后续补领。这里的 snapshot 只用于发现阶段复用已读任务，
+    不参与最终有效期提醒或完成度汇报。
     """
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
@@ -5890,29 +5904,6 @@ def t_unknown_tasks(s, uid, nick, log, snapshot=None):
             log("   ⚠️新任务需手动: %s %s (%s) — 涉及真实捐款" % (code, title, desc))
         else:
             log("   ⚠️未覆盖新任务: %s %s (%s) — 请反馈更新脚本" % (code, title, desc))
-    # 有效期预警：未完成但即将过期（或已过期）的任务
-    import datetime
-    today = beijing_today()
-    soon = []
-    for t in rows:
-        if not isinstance(t, dict) or t.get("accept_status") in ("claimed", "completed"):
-            continue
-        ve = str(t.get("valid_end") or "")[:10]
-        if len(ve) < 10:
-            continue
-        try:
-            d = datetime.date(*[int(x) for x in ve.split("-")])
-        except Exception:
-            continue
-        left = (d - today).days
-        if left < 0:
-            soon.append((t.get("task_code", ""), ve, "已过期"))
-        elif left <= 7:
-            soon.append((t.get("task_code", ""), ve, "%d 天后到期" % left))
-    if soon:
-        log("   ⏰ 任务有效期提醒（未完成）:")
-        for code, ve, when in soon[:6]:
-            log("      · %s %s（%s）" % (code, ve, when))
 
 
 def claim_ready_tasks(s, log):
@@ -6053,21 +6044,6 @@ def _summarize_task_completion(rows, receipts=None):
     """终态计分只认明确 claimed 或本轮已确认 receipt 的任务。"""
     receipts = receipts if isinstance(receipts, dict) else {}
 
-    class ReceiptResponse:
-        status_code = 200
-
-    confirmed = set()
-    for code, receipt in receipts.items():
-        if not isinstance(receipt, dict):
-            continue
-        if receipt.get("readback_claimed"):
-            confirmed.add(code)
-            continue
-        ok, _, _ = _claim_response_ok(
-            ReceiptResponse(), {"code": 0, "data": receipt})
-        if ok:
-            confirmed.add(code)
-
     done = 0
     rest = []
     for task in rows:
@@ -6076,16 +6052,64 @@ def _summarize_task_completion(rows, receipts=None):
         code = str(task.get("task_code") or task.get("code") or "").strip()
         if not code:
             continue
-        status = str(
-            task.get("accept_status") or task.get("status") or "").strip().lower()
-        claimed = task.get("claimed")
-        if (status == "claimed" or claimed is True
-                or str(claimed).strip().lower() == "true"
-                or code in confirmed):
+        if (_task_is_done(task)
+                or _claim_receipt_is_confirmed(receipts.get(code))):
             done += 1
         else:
             rest.append(code)
     return done, rest
+
+
+def _log_task_expiry_reminders(rows, log, receipts=None, today=None):
+    """对终态任务行打印 7 天内到期提醒，并返回本次提醒项。
+
+    只消费终态 `st_all`：claimed/claimed=true/本轮回执确认都算已结算；
+    completed 但仍未领奖仍需提醒。locked 无从操作，活动域任务走独立契约，
+    都不混入成长任务的到期提醒。
+    """
+    import datetime as _dt
+
+    receipts = receipts if isinstance(receipts, dict) else {}
+    today = today or beijing_today()
+    grouped = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        code = _task_code_of(row)
+        if not code or code in CAMPAIGN_TASK_CODES:
+            continue
+        grouped.setdefault(code, []).append(row)
+
+    soon = []
+    for code, task_rows in grouped.items():
+        if any(_task_is_done(row) for row in task_rows):
+            continue
+        if _claim_receipt_is_confirmed(receipts.get(code)):
+            continue
+        active_rows = [row for row in task_rows if not row.get("locked")]
+        if not active_rows:
+            continue
+        valid_ends = []
+        for row in active_rows:
+            value = str(row.get("valid_end") or "")[:10]
+            try:
+                valid_ends.append((_dt.date(*[int(x) for x in value.split("-")]), value))
+            except (TypeError, ValueError):
+                continue
+        if not valid_ends:
+            continue
+        expiry, value = min(valid_ends, key=lambda item: item[0])
+        left = (expiry - today).days
+        if left < 0:
+            soon.append((code, value, "已过期"))
+        elif left <= 7:
+            soon.append((code, value, "%d 天后到期" % left))
+
+    if soon:
+        log("   ⏰ 任务有效期提醒（未完成/未领奖）:")
+        for code, value, when in soon[:6]:
+            log("      · %s %s（%s）" % (code, value, when))
+    return soon
 
 
 # ---------- 稳定指纹 & 事件构建（从 task_runner.py 移植） ----------
@@ -6573,8 +6597,10 @@ def run_account(idx, acc, do_desktop):
     # 终态
     st_all = (_json_or_empty(s.get(BASE + "/v2/activity/growth/tasks", timeout=25,
                                       verify=False)).get("data") or {}).get("tasks", [])
+    claim_receipts = getattr(s, "_workbuddy_claim_receipts", {})
+    _log_task_expiry_reminders(st_all, log, receipts=claim_receipts)
     done, rest = _summarize_task_completion(
-        st_all, getattr(s, "_workbuddy_claim_receipts", {}))
+        st_all, claim_receipts)
     prof2 = (_json_or_empty(s.get(BASE + "/v2/activity/growth/profile", timeout=25,
                                        verify=False)).get("data") or {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,

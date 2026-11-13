@@ -622,6 +622,10 @@ class TaskSnapshotTests(unittest.TestCase):
         module = load_functions(
             "_api_code_ok",
             "_claim_response_ok",
+            "_claim_receipt_is_confirmed",
+            "_task_code_of",
+            "_task_status_of",
+            "_task_is_done",
             "_summarize_task_completion",
             "task_cn",
             "build_summary",
