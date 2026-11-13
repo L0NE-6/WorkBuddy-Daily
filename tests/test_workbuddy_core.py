@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -306,23 +307,120 @@ class CoreBehaviorTests(unittest.TestCase):
                     "data": {"results": [{"status": "accepted"}]},
                 })
 
+        # 每轮 post 后读两次：第 1 次调用 4 读全空 → 失败；第 2 次调用末读落账 → 成功
         states = [
-            (None, None, None),
-            (None, None, None),
-            ("accepted", 0, 1),
+            (None, None, None), (None, None, None),
+            (None, None, None), (None, None, None),
+            (None, None, None), (None, None, None),
+            (None, None, None), ("accepted", 0, 1),
         ]
         module = load_functions(
             "_accept_with_verify",
             BASE="https://example.test",
             WRITE_GAP=0,
+            ACCEPT_SETTLE_GAP=0,
             prog=lambda session, code: states.pop(0),
             time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
         )
         session = Session()
         logs = []
         self.assertFalse(module["_accept_with_verify"](session, "new_task", logs.append))
+        logs.clear()
         self.assertTrue(module["_accept_with_verify"](session, "new_task", logs.append))
-        self.assertEqual(3, session.posts)
+        self.assertEqual([], logs)
+        self.assertEqual(4, session.posts)
+
+    def test_accept_verify_treats_already_accepted_as_success(self):
+        """上游对已登记任务回 status=already_accepted，不能当成失败。"""
+
+        class Session:
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [{"task_code": "skill_share",
+                                          "status": "already_accepted"}]},
+                })
+
+        module = load_functions(
+            "_accept_with_verify",
+            BASE="https://example.test",
+            WRITE_GAP=0,
+            ACCEPT_SETTLE_GAP=0,
+            prog=lambda session, code: ("accepted", 0, 1),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+        logs = []
+        self.assertTrue(module["_accept_with_verify"](Session(), "skill_share", logs.append))
+        self.assertEqual([], logs)
+
+    def test_accept_verify_returns_false_on_request_or_json_exception(self):
+        module = load_functions(
+            "_accept_with_verify",
+            BASE="https://example.test",
+            WRITE_GAP=0,
+            ACCEPT_SETTLE_GAP=0,
+            prog=lambda session, code: (_ for _ in ()).throw(
+                AssertionError("解析失败时不应继续回读")),
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+        )
+
+        class RequestError:
+            def post(self, *args, **kwargs):
+                raise TimeoutError("socket timed out")
+
+        class ParseError:
+            def post(self, *args, **kwargs):
+                return type("Response", (), {
+                    "status_code": 200,
+                    "json": staticmethod(lambda: (_ for _ in ()).throw(
+                        ValueError("invalid json"))),
+                })()
+
+        for session, token in ((RequestError(), "timeout"),
+                               (ParseError(), "invalid json")):
+            with self.subTest(token=token):
+                logs = []
+                self.assertFalse(module["_accept_with_verify"](
+                    session, "new_task", logs.append))
+                self.assertTrue(any("new_task" in line for line in logs))
+
+    def test_accept_all_survives_async_settle(self):
+        """批量 accept 回 accepted，但回读要等几秒才翻状态——不能判成未落账。"""
+
+        class Session:
+            def get(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"tasks": [{"task_code": "skill_share",
+                                        "accept_status": "not_accepted"}]},
+                })
+
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [{"task_code": "skill_share",
+                                          "status": "accepted"}]},
+                })
+
+        reads = iter([
+            {"skill_share": "not_accepted"},
+            {"skill_share": "accepted"},
+        ])
+        module = load_functions(
+            "_accept_response_settled", "t_accept_all",
+            BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=3,
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+            _growth_task_status_map=lambda session: next(reads),
+            ensure_first_buddy=lambda session, uid, nick, log: True,
+            _accept_with_verify=lambda session, code, log: False,
+        )
+        logs = []
+        module["t_accept_all"](Session(), "u1", "nick", logs.append)
+        text = " ".join(logs)
+        self.assertNotIn("未落账", text)
+        self.assertIn("全部登记生效", text)
 
     def test_accept_all_repairs_prerequisite_then_confirms_state(self):
         class Session:
@@ -346,10 +444,12 @@ class CoreBehaviorTests(unittest.TestCase):
                 })
 
         module = load_functions(
-            "t_accept_all",
+            "_accept_response_settled", "t_accept_all",
             BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=3,
             time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
-            prog=lambda session, code: ("accepted", 0, 1),
+            _growth_task_status_map=lambda session: {"dependent_task": "accepted"},
             ensure_first_buddy=lambda session, uid, nick, log: True,
             _accept_with_verify=lambda session, code, log: True,
         )
@@ -359,6 +459,133 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("待前置「first_buddy」满足", text)
         self.assertIn("Buddy 已就绪", text)
         self.assertIn("全部登记生效", text)
+
+    def test_accept_all_batches_settlement_reads_once_per_round(self):
+        class Session:
+            def get(self, url, **kwargs):
+                raise AssertionError("rows 已传入时不应额外读取任务表")
+
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [
+                        {"task_code": "first", "status": "accepted"},
+                        {"task_code": "second", "status": "accepted"},
+                        {"task_code": "third", "status": "accepted"},
+                    ]},
+                })
+
+        maps = iter([
+            {"first": "accepted", "second": "not_accepted", "third": "not_accepted"},
+            {"first": "accepted", "second": "accepted", "third": "not_accepted"},
+            {"first": "accepted", "second": "accepted", "third": "accepted"},
+        ])
+        map_calls = []
+
+        def status_map(session):
+            states = next(maps)
+            map_calls.append(states)
+            return states
+
+        module = load_functions(
+            "_accept_response_settled", "t_accept_all",
+            BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=3,
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+            _growth_task_status_map=status_map,
+            ensure_first_buddy=lambda session, uid, nick, log: True,
+            _accept_with_verify=lambda session, code, log: self.fail(
+                "批量回读已结算时不应逐任务重试"),
+        )
+        logs = []
+        module["t_accept_all"](
+            Session(), "u1", "nick", logs.append,
+            rows=[{"task_code": code, "accept_status": "not_accepted"}
+                  for code in ("first", "second", "third")],
+        )
+        self.assertEqual(3, len(map_calls))
+        self.assertTrue(any("全部登记生效（3 项）" in line for line in logs))
+
+    def test_accept_all_retry_exception_is_isolated(self):
+        class Session:
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [
+                        {"task_code": "first", "status": "error",
+                         "message": "temporary error"},
+                        {"task_code": "second", "status": "error",
+                         "message": "temporary error"},
+                    ]},
+                })
+
+        retried = []
+
+        def retry(session, code, log):
+            retried.append(code)
+            if code == "first":
+                raise TimeoutError("retry timed out")
+            return True
+
+        module = load_functions(
+            "_accept_response_settled", "t_accept_all",
+            BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=1,
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+            _growth_task_status_map=lambda session: {
+                "first": "not_accepted", "second": "not_accepted"},
+            ensure_first_buddy=lambda session, uid, nick, log: True,
+            _accept_with_verify=retry,
+        )
+        logs = []
+        module["t_accept_all"](
+            Session(), "u1", "nick", logs.append,
+            rows=[{"task_code": code, "accept_status": "not_accepted"}
+                  for code in ("first", "second")],
+        )
+        self.assertEqual(["first", "second"], retried)
+        self.assertTrue(any("first 重试异常" in line for line in logs))
+        self.assertTrue(any("仍无法登记 1 项: first" in line for line in logs))
+
+    def test_accept_all_logs_existing_completions_as_settled(self):
+        class Session:
+            def post(self, url, **kwargs):
+                return FakeResponse(payload={
+                    "code": 0,
+                    "data": {"results": [
+                        {"task_code": "accepted_task",
+                         "status": "already_accepted"},
+                        {"task_code": "completed_task", "status": "error",
+                         "message": "task already completed"},
+                    ]},
+                })
+
+        module = load_functions(
+            "_accept_response_settled", "t_accept_all",
+            BASE="https://example.test",
+            ACCEPT_BATCH_SETTLE=0,
+            ACCEPT_BATCH_TRIES=1,
+            time=type("Time", (), {"sleep": staticmethod(lambda seconds: None)}),
+            _growth_task_status_map=lambda session: {
+                "accepted_task": "accepted",
+                "completed_task": "completed",
+            },
+            ensure_first_buddy=lambda session, uid, nick, log: True,
+            _accept_with_verify=lambda session, code, log: self.fail(
+                "已结算任务不应再次重试"),
+        )
+        logs = []
+        module["t_accept_all"](
+            Session(), "u1", "nick", logs.append,
+            rows=[{"task_code": code, "accept_status": "not_accepted"}
+                  for code in ("accepted_task", "completed_task")],
+        )
+        text = " ".join(logs)
+        self.assertIn("已结算 2 / 待回读 0", text)
+        self.assertNotIn("✗", text)
+        self.assertNotIn("未落账", text)
 
     def test_unknown_tasks_discovers_mp_rows_when_desktop_fails(self):
         class Session:
@@ -889,6 +1116,46 @@ class CoreBehaviorTests(unittest.TestCase):
 
         self.assertEqual(rotated_rt, store["13800000000"]["refresh_token"])
         self.assertEqual(1, len(store))
+
+    def test_auto_refresh_masks_phone_in_logs(self):
+        now = int(time.time())
+        phone = "13800000000"
+        old_rt = jwt_token({"typ": "Offline", "jti": "old"})
+        new_at = jwt_token({"typ": "Bearer", "exp": now + 86400 * 30})
+        new_rt = jwt_token({"typ": "Offline", "jti": "rotated"})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            with open(store_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    phone: {
+                        "refresh_token": old_rt,
+                        "access_token": "",
+                        "updated": "",
+                    },
+                }, handle, ensure_ascii=False)
+            previous_env = os.environ.pop("WORKBUDDY_REFRESH_TOKEN", None)
+            module = load_functions(
+                "auto_refresh", "_account_identity", "_parse_env_tokens",
+                "_token_kind", "_token_user", "_jwt_claims",
+                os=os, json=json, base64=base64, time=time,
+                REFRESH_STORE=store_path,
+                TOKEN_FILE=os.path.join(temp_dir, "WORKBUDDY_ACCESS_TOKEN.txt"),
+                refresh_one=lambda rt, at="": (new_at, new_rt),
+                _token_sanity=lambda rt, at: [],
+                _rebuild_token_file=lambda store: None,
+                mask_phone=lambda value: "13*******00",
+            )
+            output = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(output):
+                    module["auto_refresh"]()
+            finally:
+                if previous_env is not None:
+                    os.environ["WORKBUDDY_REFRESH_TOKEN"] = previous_env
+
+        text = output.getvalue()
+        self.assertIn("13*******00 token已自动续期", text)
+        self.assertNotIn(phone, text)
 
     def test_env_merge_without_stable_identity_preserves_existing_account(self):
         now = int(time.time())
@@ -3198,7 +3465,7 @@ class CampaignTaskTests(unittest.TestCase):
                 return None
         return _Clock
 
-    def _harness(self, state, claims, fired, advance=True):
+    def _harness(self, state, claims, fired, advance=True, fail_kinds=()):
         """state: {campaign: {task: row}}；_fire 按调用推进度并写 completed_at。"""
         import copy
 
@@ -3207,8 +3474,8 @@ class CampaignTaskTests(unittest.TestCase):
 
         def fire(_s, _uid, _nick, spec, task, _log):
             fired.append((spec["code"], task["task"]))
-            if task.get("kind") == "app":
-                # 手机端 App 任务脚本不伪造事件
+            if task.get("kind") in fail_kinds:
+                # 触发失败（网络异常/会话建不起来）：本任务不推进度
                 return False
             row = state[spec["code"]][task["task"]]
             if not advance:
@@ -3228,6 +3495,8 @@ class CampaignTaskTests(unittest.TestCase):
             CAMPAIGN_SLOW_GAP=assignment_value("CAMPAIGN_SLOW_GAP"),
             CAMPAIGN_DESKTOP_WAIT=assignment_value("CAMPAIGN_DESKTOP_WAIT"),
             CAMPAIGN_DESKTOP_POLL=assignment_value("CAMPAIGN_DESKTOP_POLL"),
+            CAMPAIGN_APP_WAIT=assignment_value("CAMPAIGN_APP_WAIT"),
+            CAMPAIGN_APP_POLL=assignment_value("CAMPAIGN_APP_POLL"),
             want=lambda *codes: True,
             campaign_tasks=cam_tasks,
             _campaign_fire=fire,
@@ -3275,6 +3544,7 @@ class CampaignTaskTests(unittest.TestCase):
         self.assertIn(("campaign_reporter_2026", "skill_use"), fired)
         self.assertEqual(
             [("campaign_starbucks_2026", "ai_chat"), ("campaign_starbucks_2026", "expert"),
+             ("campaign_starbucks_2026", "app"),
              ("campaign_reporter_2026", "expert_chat"), ("campaign_reporter_2026", "skill_use"),
              ("campaign_reporter_2026", "desktop_same")],
             claims)
@@ -3291,16 +3561,24 @@ class CampaignTaskTests(unittest.TestCase):
         self.assertEqual([], fired)
         self.assertEqual(6, len(claims))
 
-    def test_manual_tasks_stay_unfinished_with_hint(self):
-        """app 不伪造事件：不领取、只留提示；desktop_same 一条事件即可点亮。"""
+    def test_desktop_and_app_tasks_are_automated(self):
+        """desktop_same 一条事件点亮，app 真跑一轮云端对话——两者都能自动领取。"""
         claims, fired, logs = [], [], []
         module = self._harness(self._blank_state(), claims, fired)
         module["t_campaigns"](object(), "uid", "nick", logs.append)
         self.assertIn(("campaign_reporter_2026", "desktop_same"), fired)
         self.assertIn(("campaign_reporter_2026", "desktop_same"), claims)
         self.assertIn(("campaign_starbucks_2026", "app"), fired)
+        self.assertIn(("campaign_starbucks_2026", "app"), claims)
+
+    def test_app_trigger_failure_stays_pending(self):
+        """app 会话建不起来时只提示，不假装成功、不领奖。"""
+        claims, fired, logs = [], [], []
+        module = self._harness(self._blank_state(), claims, fired, fail_kinds=("app",))
+        module["t_campaigns"](object(), "uid", "nick", logs.append)
+        self.assertIn(("campaign_starbucks_2026", "app"), fired)
         self.assertNotIn(("campaign_starbucks_2026", "app"), claims)
-        self.assertTrue(any("尚未完成" in line and "App" in line for line in logs))
+        self.assertTrue(any("触发失败" in line and "App" in line for line in logs))
 
     def test_claimed_task_is_skipped(self):
         state = self._blank_state()
@@ -3542,6 +3820,317 @@ class CampaignEventShapeTests(unittest.TestCase):
         self.assertEqual("uid-1", headers["X-User-Id"])
         self.assertEqual("mp-weixin", headers["X-Client-Platform"])
         self.assertEqual("workbuddy-mp", headers["X-Client-Product"])
+
+    def test_app_headers_use_app_identity(self):
+        """app 任务必须用 App 身份头：服务端按 x-client-product 判来源。"""
+        module = load_functions("_campaign_app_headers")
+        headers = module["_campaign_app_headers"]("tok-123", "uid-9", "text/event-stream")
+        self.assertEqual("Bearer tok-123", headers["Authorization"])
+        self.assertEqual("uid-9", headers["X-User-Id"])
+        self.assertEqual("workbuddy-app", headers["X-Client-Product"])
+        self.assertEqual("android", headers["X-Client-Platform"])
+        self.assertEqual("text/event-stream", headers["Accept"])
+        self.assertIn("WorkBuddyApp/", headers["User-Agent"])
+
+    def test_app_machine_id_is_derived_not_hardcoded(self):
+        """设备号必须按账号派生：仓库里不留真实设备指纹，也不跨账号复用。"""
+        module = load_functions("_campaign_app_machine", hashlib=__import__("hashlib"))
+        machine = module["_campaign_app_machine"]
+        first = machine("uid-9")
+        self.assertEqual(first, machine("uid-9"))
+        self.assertNotEqual(first, machine("uid-10"))
+        self.assertEqual(8, len(first))
+        self.assertTrue(all(c in "0123456789abcdef" for c in first))
+        # 空账号也不能炸，且依然是 8 位
+        self.assertEqual(8, len(machine(None)))
+
+    def test_app_box_url_is_limited_to_https_official_hosts(self):
+        module = load_functions(
+            "_campaign_app_box_url",
+            urlparse=urlparse,
+            CAMPAIGN_APP_BOX_DOMAINS=assignment_value("CAMPAIGN_APP_BOX_DOMAINS"),
+        )
+        validate = module["_campaign_app_box_url"]
+        self.assertEqual(
+            "https://sandbox.tencent.com/runtime-1",
+            validate("https://sandbox.tencent.com/runtime-1/"),
+        )
+        self.assertEqual(
+            "https://workbuddy.agentos-worker.net/runtime-1",
+            validate("https://workbuddy.agentos-worker.net/runtime-1"),
+        )
+        for value in (
+            "",
+            "http://sandbox.tencent.com/runtime-1",
+            "https://sandbox.tencent.com.evil.example/runtime-1",
+            "https://workbuddy.agentos-worker.net.evil.example/runtime-1",
+            "https://user:pass@sandbox.tencent.com/runtime-1",
+            "https://sandbox.tencent.com:8443/runtime-1",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual("", validate(value))
+
+    def test_app_sse_parser_handles_str_bytes_and_structured_reasons(self):
+        module = load_functions(
+            "_campaign_app_sse_payload", "_campaign_app_terminal",
+            json=json,
+            CAMPAIGN_APP_SUCCESS_STOP_REASONS=assignment_value(
+                "CAMPAIGN_APP_SUCCESS_STOP_REASONS"),
+        )
+        for line in (
+            'data: {"id":3,"result":{"stopReason":"end_turn"}}',
+            b'data: {"id":3,"result":{"stopReason":"end_turn"}}',
+        ):
+            with self.subTest(line_type=type(line).__name__):
+                payload = module["_campaign_app_sse_payload"](line)
+                self.assertEqual(("end_turn", None),
+                                 module["_campaign_app_terminal"](payload))
+        error_payload = module["_campaign_app_sse_payload"]("event: error")
+        self.assertEqual((None, "error"),
+                         module["_campaign_app_terminal"](error_payload))
+        refusal = module["_campaign_app_sse_payload"](
+            'data: {"result":{"stopReason":"refusal"}}')
+        self.assertEqual((None, "refusal"),
+                         module["_campaign_app_terminal"](refusal))
+
+    def test_app_sse_event_joins_multiline_data(self):
+        module = load_functions("_campaign_app_sse_event", json=json)
+        payload = module["_campaign_app_sse_event"](
+            "message",
+            [
+                '{"jsonrpc":"2.0","id":3,',
+                '"result":{"stopReason":"end_turn"}}',
+            ],
+        )
+        self.assertEqual("message", payload["_event"])
+        self.assertEqual("end_turn", payload["result"]["stopReason"])
+
+    def _run_app_chat(self, lines, box_url="https://sandbox.tencent.com/box",
+                      stream_error=None, clock=None):
+        class JsonResponse:
+            status_code = 200
+            headers = {}
+            text = ""
+
+            @staticmethod
+            def json():
+                return {"data": {"session": {
+                    "boxUrl": box_url,
+                    "token": "sandbox-token",
+                }}}
+
+        class StreamResponse:
+            status_code = 200
+            headers = {"Acp-Connection-Id": "connection-1"}
+
+            def __init__(self):
+                self.closed = False
+
+            def iter_lines(self, decode_unicode=False):
+                yield from lines
+                if stream_error is not None:
+                    raise stream_error
+
+            def close(self):
+                self.closed = True
+
+        class Session:
+            instances = []
+
+            def __init__(self):
+                self.headers = {}
+                self.trust_env = True
+                self.posts = []
+                self.stream = None
+                self.closed = False
+                self.__class__.instances.append(self)
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                if len(self.posts) == 1:
+                    return JsonResponse()
+                self.stream = StreamResponse()
+                return self.stream
+
+            def close(self):
+                self.closed = True
+
+        fake_requests = types.SimpleNamespace(Session=Session)
+        actual_clock = clock or types.SimpleNamespace(
+            time=lambda: 0.0, sleep=lambda seconds: None)
+        module = load_functions(
+            "_campaign_app_box_url",
+            "_campaign_app_sse_payload",
+            "_campaign_app_sse_event",
+            "_campaign_app_terminal",
+            "_campaign_app_machine",
+            "_campaign_app_headers",
+            "_campaign_app_chat",
+            json=json,
+            urlparse=urlparse,
+            hashlib=hashlib,
+            uuid=uuid,
+            requests=fake_requests,
+            time=actual_clock,
+            CAMPAIGN_APP_HOST="https://copilot.tencent.com",
+            CAMPAIGN_APP_BOOT=120,
+            CAMPAIGN_APP_PROMPT='你只需要回复"Hi"',
+            CAMPAIGN_APP_BOX_DOMAINS=assignment_value("CAMPAIGN_APP_BOX_DOMAINS"),
+            CAMPAIGN_APP_SUCCESS_STOP_REASONS=assignment_value(
+                "CAMPAIGN_APP_SUCCESS_STOP_REASONS"),
+        )
+        session = types.SimpleNamespace(
+            headers={"Authorization": "Bearer access-token"})
+        logs = []
+        ok = module["_campaign_app_chat"](
+            session, "uid-9", "nick", logs.append)
+        return ok, logs, Session.instances[0]
+
+    def test_app_chat_requires_structured_end_turn_and_verifies_tls(self):
+        line = b'data: {"jsonrpc":"2.0","id":3,' \
+               b'"result":{"stopReason":"end_turn"}}'
+        ok, logs, session = self._run_app_chat([line])
+        self.assertTrue(ok, logs)
+        self.assertEqual(2, len(session.posts))
+        self.assertIs(True, session.posts[0][1]["verify"])
+        self.assertIs(True, session.posts[1][1]["verify"])
+        self.assertTrue(session.posts[1][0].startswith(
+            "https://sandbox.tencent.com/box/acp/bootstrap"))
+        self.assertTrue(session.closed)
+        self.assertTrue(session.stream.closed)
+
+    def test_app_chat_joins_multiline_sse_and_uses_live_host(self):
+        lines = [
+            b"event: message",
+            b'data: {"jsonrpc":"2.0","id":3,',
+            b'data: "result":{"stopReason":"end_turn"}}',
+            b"",
+        ]
+        ok, logs, session = self._run_app_chat(
+            lines,
+            box_url="https://workbuddy.agentos-worker.net/box",
+        )
+        self.assertTrue(ok, logs)
+        self.assertEqual(2, len(session.posts))
+        self.assertTrue(session.posts[1][0].startswith(
+            "https://workbuddy.agentos-worker.net/box/acp/bootstrap"))
+
+    def test_app_chat_rejects_eof_truncated_error_and_unexpected_stop(self):
+        cases = (
+            ([], "提前结束"),
+            ([b'data: {"id":3,"result":'], "提前结束"),
+            ([b'event: error', b'data: {"message":"failed"}'], "错误事件"),
+            ([b'data: {"result":{"stopReason":"refusal"}}'], "错误事件 refusal"),
+        )
+        for lines, expected in cases:
+            with self.subTest(expected=expected):
+                ok, logs, _ = self._run_app_chat(lines)
+                self.assertFalse(ok)
+                self.assertTrue(any(expected in line for line in logs), logs)
+
+    def test_app_chat_rejects_timeout_and_short_stream_exception(self):
+        clock = types.SimpleNamespace(
+            time=iter((0.0, 121.0)).__next__,
+            sleep=lambda seconds: None,
+        )
+        ok, logs, _ = self._run_app_chat(
+            [b'data: {"method":"session/update"}'], clock=clock)
+        self.assertFalse(ok)
+        self.assertTrue(any("对话超时" in line for line in logs))
+
+        ok, logs, _ = self._run_app_chat(
+            [b'data: {"method":"session/update"}'],
+            stream_error=TimeoutError("read timed out"),
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("对话异常：TimeoutError" in line for line in logs))
+
+    def test_app_chat_rejects_untrusted_box_host_before_sandbox_token(self):
+        ok, logs, session = self._run_app_chat(
+            [b'data: {"result":{"stopReason":"end_turn"}}'],
+            box_url="https://sandbox.tencent.com.evil.example/box",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(1, len(session.posts))
+        self.assertTrue(any("受信任" in line for line in logs))
+
+    @staticmethod
+    def _mask_phone(number):
+        return number[:1] + "*" * (len(number) - 2) + number[-1:]
+
+    @staticmethod
+    def _privacy_pattern():
+        return re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+
+    def test_repository_text_files_contain_no_unapproved_phone_numbers(self):
+        """全仓非二进制文本只允许示例号，不得出现接入过的真实账号。"""
+        root = Path(__file__).resolve().parents[1]
+        git = shutil.which("git")
+        files = []
+        if git:
+            listed = subprocess.run(
+                [git, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if listed.returncode == 0:
+                files = [root / item.decode("utf-8", "surrogateescape")
+                         for item in listed.stdout.split(b"\0") if item]
+        if not files:
+            files = [path for path in root.rglob("*")
+                     if path.is_file() and ".git" not in path.parts]
+
+        allowed = {"13800000000", "13800138000"}
+        pattern = self._privacy_pattern()
+        failures = {}
+        for path in files:
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if b"\0" in raw:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            found = set(pattern.findall(text)) - allowed
+            if found:
+                failures[str(path.relative_to(root))] = {
+                    self._mask_phone(number) for number in found}
+        self.assertEqual({}, failures)
+
+    def test_commit_messages_contain_no_unapproved_phone_numbers(self):
+        """可读取 Git 历史时，所有 refs 的 commit message 一并做隐私扫描。"""
+        root = Path(__file__).resolve().parents[1]
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("git 不可用")
+        inside = subprocess.run(
+            [git, "rev-parse", "--is-inside-work-tree"],
+            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if inside.returncode != 0 or inside.stdout.strip() != b"true":
+            self.skipTest("测试目录不含 Git 历史")
+        messages = subprocess.run(
+            [git, "log", "--all", "--format=%H%x00%B%x00"],
+            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        self.assertEqual(0, messages.returncode)
+        fields = messages.stdout.split(b"\0")
+        allowed = {"13800000000", "13800138000"}
+        pattern = self._privacy_pattern()
+        failures = {}
+        for index in range(0, len(fields) - 1, 2):
+            sha = fields[index].decode("ascii", "ignore").strip()
+            body = fields[index + 1].decode("utf-8", "replace")
+            found = set(pattern.findall(body)) - allowed
+            if sha and found:
+                failures[sha] = {
+                    self._mask_phone(number) for number in found}
+        self.assertEqual({}, failures)
 
 
 if __name__ == "__main__":
