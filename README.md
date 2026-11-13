@@ -493,6 +493,8 @@ python daily_forward.py daily.log --wx
 
 小程序原生活动页（`campaign_starbucks_2026` / `campaign_reporter_2026`）的任务不走成长中心，判据在活动域 `https://www.codebuddy.cn/portal/activity/*`，**完成≠到账，必须再调 `claim`**。
 
+> ⚠️ **活动下发判定**：`campaign_*` 活动码**不会**出现在成长中心任务清单（`GET /v2/activity/growth/tasks`）里。请勿用成长中心清单对本组做「未下发即跳过」判断——活动是否下发只以 `GET /portal/activity/tasks?activity_code=<活动码>` 返回的 `tasks[]` 为准；接口读取失败时应打印告警并跳过，而不是当作「活动已结束」处理。
+
 | 活动 | 任务 | 奖励 | 判定依据 |
 | :--- | :--- | :-: | :--- |
 | 星巴克协作 | `ai_chat` 与 AI 对话 3 次 | 100 | mp `chat_request_send` × 剩余次数 |
