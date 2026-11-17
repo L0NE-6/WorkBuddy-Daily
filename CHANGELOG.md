@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.51（2026-11-18）
+
+- 修正 `skill_share`（分享一个技能给好友）判据事件：从旧的 `link + click + share_code` 改为客户端实测口径 `action=wechat`、`panelAction=success`、`panelType=mini_program_card`，事件 `id` 必须使用服务端返回的 `channel_id`。
+- 创建分享渠道时同时校验 `channel_id`、`share_code` 与真实分享链接；任一缺失即停止上报和领奖，避免“渠道已创建但事件永远不会计数”的静默失败。
+- 补齐 `skillSource=market`、`entry=skill_detail`、`status=safe`、`actionSuccessful=true` 字段，并锁定只发送一条成功事件，不再发送不计分的 `click` 事件。
+- 新增 `channel_id` 缺失、事件字段、事件数量与服务端进度回读回归测试；按任务进度和领取回执双重门禁，不以 HTTP 200 冒充完成。
+- 依据：2026-11-17 公开活跃分支的国服实测记录（两个账号 `skill_share` 均从 `0/1` 到 `1/1 completed`）及客户端 `asar` 事件映射；本轮在本地完成代码审查、回归测试与发布验证。
+
 ## v3.50（2026-11-14）
 
 - 日志与推送中的 `完成 x/y` 明确标注为“桌面成长任务”，不再让用户误以为它是账号全部任务总数。

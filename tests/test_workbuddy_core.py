@@ -3346,13 +3346,18 @@ class SkillShareTaskTests(unittest.TestCase):
         self.assertEqual(["skill_share"], claims)
         self.assertEqual(1, len(reports))
         self.assertEqual(
-            ["skill_share_channel_action", "skill_share_channel_action"],
+            ["skill_share_channel_action"],
             [event["eventCode"] for event in reports[0]],
         )
-        self.assertEqual(
-            ["click", "success"],
-            [event["panelAction"] for event in reports[0]],
-        )
+        event = reports[0][0]
+        self.assertEqual("wechat", event["action"])
+        self.assertEqual("success", event["panelAction"])
+        self.assertEqual("mini_program_card", event["panelType"])
+        self.assertEqual("market", event["skillSource"])
+        self.assertEqual("channel-1", event["id"])
+        self.assertEqual("skill_detail", event["entry"])
+        self.assertEqual("safe", event["status"])
+        self.assertTrue(event["actionSuccessful"])
         self.assertTrue(any("✅" in line for line in logs))
 
     def test_channel_without_progress_never_claims(self):
@@ -3399,6 +3404,33 @@ class SkillShareTaskTests(unittest.TestCase):
 
         self.assertEqual([], reports)
         self.assertEqual([], claims)
+
+    def test_channel_without_id_does_not_report_or_claim(self):
+        module, session, reports, claims, _ = self._namespace(
+            {
+                "task_code": "skill_share",
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 1},
+            },
+            {
+                "code": 0,
+                "data": {
+                    "share_code": "share-1",
+                    "ways": [{
+                        "share_way": "link",
+                        "resource_ref": "https://share.example/skill",
+                    }],
+                },
+            },
+            [],
+        )
+        logs = []
+        module["t_skill_share"](
+            session, "uid-1", "nick", logs.append, snapshot=None)
+
+        self.assertEqual([], reports)
+        self.assertEqual([], claims)
+        self.assertIn("channel_id", " ".join(logs))
 
     def test_locked_and_claimed_rows_are_noops(self):
         for row in (
