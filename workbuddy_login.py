@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🔐 WorkBuddy 短信验证码登录工具 (v2 · 插件接口版)
+🔐 WorkBuddy 短信验证码登录工具 (v2.1 · 插件接口版)
 ════════════════════════════════════════════════════════════════
 输入手机号 → 自动发送验证码 → 输入收到的验证码 → 直接拿到 AT + RT
 
@@ -17,6 +17,7 @@
 说明:
   · 走官方插件登录接口 /v2/plugin/login/*，由服务端直接下发 accessToken / refreshToken，
     无需再解析 Keycloak 登录页表单，稳定可靠。
+  · 输出前校验 AT/RT 结构；RT 不是合法 JWT 时拒绝生成环境变量行，避免把坏凭据带进主脚本。
   · 仅依赖 requests。
 """
 import sys, os, json, time, base64, datetime
@@ -106,22 +107,77 @@ def _jwt(tok):
         return {}
 
 
-def verify_rt(rt):
-    """用 RT 调一次刷新接口，验证凭据真的可用"""
+def _token_report(tok):
+    """返回凭据的安全结构摘要，不包含 token 原文。"""
+    tok = str(tok or "").strip()
+    report = {
+        "length": len(tok),
+        "jwt": bool(tok.startswith("eyJ") and tok.count(".") == 2),
+        "typ": "",
+        "iss": "",
+    }
+    if not report["jwt"]:
+        return report
+    payload = _jwt(tok)
+    report["typ"] = str(payload.get("typ") or "")
+    report["iss"] = str(payload.get("iss") or "")
+    return report
+
+
+def validate_credentials(at, rt):
+    """校验登录工具拿到的 AT/RT，返回可执行的错误列表。"""
+    allowed_issuers = {
+        "https://www.codebuddy.cn/auth/realms/copilot",
+        "https://www.workbuddy.cn/auth/realms/copilot",
+        "https://copilot.tencent.com/auth/realms/copilot",
+    }
+    errors = []
+    for name, tok, expected_typ in (("AT", at, "Bearer"), ("RT", rt, "Offline")):
+        report = _token_report(tok)
+        if not report["jwt"]:
+            errors.append(
+                "%s 不是 eyJ 开头的三段式 JWT（长度 %d）；"
+                "登录接口返回了错误字段或被截断，拒绝输出环境变量"
+                % (name, report["length"])
+            )
+            continue
+        if report["typ"] and report["typ"] != expected_typ:
+            errors.append(
+                "%s 的 typ=%s（应为 %s）；AT/RT 可能写反或粘错字段"
+                % (name, report["typ"], expected_typ)
+            )
+        if report["iss"] and report["iss"] not in allowed_issuers:
+            errors.append(
+                "%s 的签发域是 %s，不是已知国内 WorkBuddy 签发域"
+                % (name, report["iss"][:100])
+            )
+    return errors
+
+
+def verify_rt(rt, at=""):
+    """用 RT 调一次刷新接口，返回 (成功, 新 AT, 新 RT)。"""
     print("[5/5] 验证刷新令牌...")
     try:
-        r = requests.post(REFRESH_URL, headers={"X-Refresh-Token": rt,
-                                                "X-Auth-Refresh-Source": "plugin",
-                                                "Content-Type": "application/json"},
+        headers = {"X-Refresh-Token": rt,
+                   "X-Auth-Refresh-Source": "plugin",
+                   "Content-Type": "application/json"}
+        at = str(at or "").strip()
+        if at:
+            headers["Authorization"] = "Bearer " + at
+            uid = str(_jwt(at).get("sub") or "").strip()
+            if uid:
+                headers["X-User-Id"] = uid
+        r = requests.post(REFRESH_URL, headers=headers,
                           json={}, timeout=20, verify=False)
         d = r.json()
-        if d.get("code") == 0 and (d.get("data") or {}).get("accessToken"):
+        inner = d.get("data") or {}
+        if d.get("code") == 0 and inner.get("accessToken"):
             print("  ✅ 刷新令牌可用（已成功换发新 AT）")
-            return True
+            return True, inner["accessToken"], inner.get("refreshToken") or rt
         print("  ⚠️ 刷新验证未通过: %s" % str(d.get("msg", ""))[:80])
     except Exception as e:
         print("  ⚠️ 刷新验证异常: %s" % str(e)[:80])
-    return False
+    return False, "", ""
 
 
 def main():
@@ -161,16 +217,37 @@ def main():
         return 1
 
     at, rt = res["accessToken"], res["refreshToken"]
+    print("[4/5] 校验凭据结构...")
+    errors = validate_credentials(at, rt)
+    if errors:
+        for error in errors:
+            print("  ❌ %s" % error)
+        print("  ⛔ 未生成环境变量行，也未保存 wb_login_result.json；请重新登录或反馈登录接口响应字段")
+        return 1
+    at_report = _token_report(at)
+    rt_report = _token_report(rt)
+    print("  ✅ AT: JWT typ=%s length=%d" % (at_report["typ"] or "?", at_report["length"]))
+    print("  ✅ RT: JWT typ=%s length=%d" % (rt_report["typ"] or "?", rt_report["length"]))
+
+    if do_verify:
+        ok, new_at, new_rt = verify_rt(rt, at)
+        if not ok:
+            print("  ⛔ 刷新验证失败，未生成环境变量行")
+            return 1
+        at, rt = new_at, new_rt
+        errors = validate_credentials(at, rt)
+        if errors:
+            for error in errors:
+                print("  ❌ %s" % error)
+            print("  ⛔ 刷新后的凭据结构仍无效，未生成环境变量行")
+            return 1
+    else:
+        print("[5/5] 完成!")
+
     j = _jwt(at)
     exp = j.get("exp", 0)
     exp_str = datetime.datetime.fromtimestamp(exp).strftime("%Y-%m-%d %H:%M") if exp else "?"
-    print("[4/5] 解析凭据...")
     print("  ✅ 身份: %s | AT 过期: %s" % (j.get("preferred_username", phone), exp_str))
-
-    if do_verify:
-        verify_rt(rt)
-    else:
-        print("[5/5] 完成!")
 
     env_line = "%s:%s:%s" % (phone, at, rt)
     print("\n" + "═" * 60)

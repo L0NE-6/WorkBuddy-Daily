@@ -1,5 +1,13 @@
 # 更新日志
 
+## 登录工具 v2.1（Release v53，2026-11-19）
+
+- 登录成功后先校验 AT/RT 的 JWT 三段结构、`typ` 与国内 WorkBuddy 签发域；RT 不是合法 JWT 时拒绝生成 `手机号:AT:RT` 行，也不写入 `wb_login_result.json`。
+- 增加 `AT: JWT typ=... length=...` / `RT: JWT typ=... length=...` 的安全摘要输出，只显示类型和长度，不显示 token 原文。
+- `--verify` 现在会把刷新接口返回的新 AT/RT 回写到最终输出，避免刷新轮换后仍打印旧 RT。
+- 针对 Issue #60 的 `RT 长度 2713、非 JWT、12153 token format error`：根因是登录接口返回/复制到了不可用的 RT 字段，不是账号过期或任务逻辑失败；新版在登录阶段直接拦截。
+- 新增登录工具结构校验、opaque RT、AT/RT 颠倒和刷新轮换回归测试。
+
 ## v3.51（2026-11-18）
 
 - 修正 `skill_share`（分享一个技能给好友）判据事件：从旧的 `link + click + share_code` 改为客户端实测口径 `action=wechat`、`panelAction=success`、`panelType=mini_program_card`，事件 `id` 必须使用服务端返回的 `channel_id`。
