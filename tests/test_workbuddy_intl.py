@@ -104,6 +104,12 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertFalse(MODULE.growth_task_is_claimed(row))
         self.assertFalse(MODULE.growth_task_is_ready(row))
 
+    def test_growth_success_code_accepts_numeric_and_string_200(self):
+        for code in (0, 200, "0", "200", None):
+            self.assertTrue(MODULE._growth_code_ok(code))
+        self.assertFalse(MODULE._growth_code_ok(500))
+        self.assertFalse(MODULE._growth_code_ok("500"))
+
     def test_growth_task_ready_requires_server_completion(self):
         self.assertTrue(MODULE.growth_task_is_ready({"status": "completed"}))
         self.assertTrue(MODULE.growth_task_is_ready({
@@ -181,7 +187,7 @@ class InternationalBehaviorTests(unittest.TestCase):
 
     def test_accept_uses_v2_endpoint_and_requires_settled_readback(self):
         response = Response(200, {
-            "code": 0,
+            "code": 200,
             "data": {"results": [
                 {"task_code": "other", "status": "error"},
                 {"task_code": "first_chat", "status": "pending"},
@@ -343,7 +349,8 @@ class InternationalBehaviorTests(unittest.TestCase):
              "expertType": "agent", "version": "1.0.0"},
             "conv", "cmb-req", "cmb-req", "hello")
         skill_events = MODULE._skill_task_events(
-            {"id": "skill-1", "name": "Skill"}, "conv", "cmb-req", "cmb-req")
+            {"id": "skill-1", "slug": "skill-slug", "name": "Skill"},
+            "conv", "cmb-req", "cmb-req")
 
         self.assertIn("agent_task_created_with_template",
                       [event["eventCode"] for event in template_events])
@@ -364,6 +371,7 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertEqual("cmb-req", expert_use["messageId"])
         skill_info = next(event for event in skill_events if event["eventCode"] == "skill_info")
         self.assertEqual("cmb-req", skill_info["messageId"])
+        self.assertEqual("skill-slug", skill_info["id"])
 
     def test_task_headers_split_level_web_and_mp_sources(self):
         level = MODULE.level_task_headers("token", "uid")
@@ -374,6 +382,27 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertEqual("web", web["X-Client-Platform"])
         self.assertEqual("miniprogram", mp["X-Client-Platform"])
         self.assertEqual("www.workbuddy.ai", level["X-Domain"])
+
+    def test_fetch_growth_tasks_uses_source_specific_platform_header(self):
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+                self.get_calls = []
+
+            def get(self, url, **kwargs):
+                self.get_calls.append((url, kwargs))
+                return Response(200, {"code": 0, "data": {"tasks": []}})
+
+        sessions = [FakeSession(), FakeSession(), FakeSession()]
+        with mock.patch.object(MODULE.requests, "Session", side_effect=sessions):
+            MODULE.fetch_growth_tasks("token", "uid")
+
+        level_headers = sessions[0].get_calls[0][1]["headers"]
+        desktop_headers = sessions[1].get_calls[0][1]["headers"]
+        mp_headers = sessions[2].get_calls[0][1]["headers"]
+        self.assertNotIn("X-Client-Platform", level_headers)
+        self.assertNotIn("X-Client-Platform", desktop_headers)
+        self.assertEqual("miniprogram", mp_headers["X-Client-Platform"])
 
     def test_web_task_conversation_requires_real_sse_message_id(self):
         lines = [
@@ -392,8 +421,14 @@ class InternationalBehaviorTests(unittest.TestCase):
                 return response
 
         session = FakeSession()
+        captured = {}
+
+        def create_session(token, uid, prompt="Hi", session=None):
+            captured["create_session"] = session
+            return True, "ok", {"id": "conv-real"}, "model-x"
+
         with mock.patch.object(MODULE, "web_conversation_session",
-                               return_value=(True, "ok", {"id": "conv-real"}, "model-x")), \
+                               side_effect=create_session), \
                 mock.patch.object(MODULE.requests, "Session", return_value=session):
             ok, note, data, model = MODULE.web_task_conversation_session(
                 "token", "uid", "hello", metadata={"userId": "uid"})
@@ -406,6 +441,7 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertTrue(session.post_calls[0][0].endswith("/console/chat/completions"))
         self.assertEqual("text/event-stream", session.post_calls[0][1]["headers"]["Accept"])
         self.assertEqual("uid", session.post_calls[0][1]["json"]["_meta"]["userId"])
+        self.assertIs(session, captured["create_session"])
 
     def test_web_task_conversation_without_message_id_fails(self):
         response = StreamResponse(200, {}, [
@@ -436,7 +472,7 @@ class InternationalBehaviorTests(unittest.TestCase):
         installed_missing = Response(200, {"code": 0, "data": {"plugins": []}})
         installed_present = Response(200, {
             "code": 0,
-            "data": {"plugins": [{"plugin_name": "demo", "enabled": True}]},
+            "data": {"plugins": [{"plugin_name": "demo-slug", "enabled": True}]},
         })
 
         class FakeSession:
@@ -458,7 +494,9 @@ class InternationalBehaviorTests(unittest.TestCase):
         with mock.patch.object(MODULE.requests, "Session", FakeSession), \
                 mock.patch.object(MODULE.time, "sleep"):
             ok, note = MODULE.install_task_skill(
-                "token", "uid", {"id": "skill-1", "name": "demo"})
+                "token", "uid", {
+                    "id": "skill-1", "slug": "demo-slug", "name": "Demo Skill",
+                })
 
         self.assertTrue(ok)
         self.assertIn("回读确认", note)
@@ -488,6 +526,12 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertEqual("uid", event["userId"])
         self.assertTrue(event["machineId"])
         self.assertTrue(event["sessionId"])
+        self.assertTrue(event["qimei36"])
+        self.assertEqual(1789036585355, event["releaseDate"])
+        self.assertEqual("5f9692923c93033111c51ad7b003eb80204a9b75", event["commit"])
+        self.assertEqual("win32", event["os"])
+        self.assertEqual(20, event["cpuCores"])
+        self.assertEqual(24, event["memorySize"])
         self.assertEqual("WorkBuddy", event["ideName"])
 
     def test_no_keepalive_skips_web_task_action(self):

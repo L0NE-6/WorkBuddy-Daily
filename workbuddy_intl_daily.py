@@ -78,7 +78,7 @@ STREAK_PATH = "/activity/growth/streak"
 WEB_CONVERSATIONS_PATH = "/console/as/conversations/"
 GROWTH_TASKS_SOURCES = (
     ("level", "/activity/growth/tasks", "level"),
-    ("desktop", "/v2/activity/growth/tasks", "web"),
+    ("desktop", "/v2/activity/growth/tasks", None),
     ("mp", "/v2/activity/growth/tasks", "miniprogram"),
 )
 GROWTH_ACCEPT_PATH = "/v2/activity/growth/tasks/accept"
@@ -104,6 +104,10 @@ TASK_EVENT_MODEL = "fast-model"
 CHAT_IDE_VERSION = "5.8.4"
 CHAT_UA = "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"
 TASK_EVENT_EXT_VERSION = CHAT_IDE_VERSION
+TASK_EVENT_RELEASE_DATE = 1789036585355
+TASK_EVENT_COMMIT = "5f9692923c93033111c51ad7b003eb80204a9b75"
+TASK_EVENT_OS_VERSION = "10.0.26220"
+TASK_EVENT_CPU_MODEL = "11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz"
 # 网页通道浏览器 UA（剔除全部桌面端指纹后，网页链路只认 Bearer + X-User-Id）
 WEB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
@@ -308,7 +312,7 @@ def report_activity(token, uid):
     return False, "上报请求已接受但回读失败: %s" % (readback_error or "未知原因")
 
 
-def web_conversation_session(token, uid, prompt="Hi"):
+def web_conversation_session(token, uid, prompt="Hi", session=None):
     """网页通道建一个带 prompt 的真实会话，返回 (ok, note, data, model)。"""
     if not uid:
         return False, "缺少账号 uid，无法建网页会话", {}, ""
@@ -322,6 +326,8 @@ def web_conversation_session(token, uid, prompt="Hi"):
         "X-User-Id": uid,
     }
     last = ""
+    session = session or requests.Session()
+    session.trust_env = False
     for model in model_chain():
         body = {
             "prompt": prompt,
@@ -330,8 +336,6 @@ def web_conversation_session(token, uid, prompt="Hi"):
             "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
         }
         try:
-            session = requests.Session()
-            session.trust_env = False
             response = session.post(BASE + WEB_CONVERSATIONS_PATH, headers=headers,
                                     json=body, timeout=40, verify=False)
             payload = json_of(response)
@@ -352,19 +356,20 @@ def web_conversation(token, uid):
     return ok, note
 
 
-def growth_headers(token, uid, platform="web"):
+def growth_headers(token, uid, platform=None):
     """等级任务列表/接取/领奖/上报共用的国际版成长中心请求头。"""
     headers = {
         "Authorization": "Bearer %s" % token,
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "X-Domain": "www.workbuddy.ai",
-        "X-Client-Platform": platform,
         "Origin": BASE,
         "Referer": BASE + "/profile/growth-center",
         "User-Agent": CHAT_UA,
         "X-Product": "SaaS",
     }
+    if platform:
+        headers["X-Client-Platform"] = platform
     if uid:
         headers["X-User-Id"] = uid
     return headers
@@ -418,23 +423,30 @@ def web_task_chat_headers(token, uid):
 def _task_identity(uid):
     machine = hashlib.sha256(("machine:" + str(uid)).encode("utf-8")).hexdigest()[:36]
     session = hashlib.sha256(("session:" + str(uid)).encode("utf-8")).hexdigest()[:36]
+    qimei = hashlib.sha256(("qimei:" + str(uid)).encode("utf-8")).hexdigest()[:36]
     return {
         "timezone": "Asia/Shanghai",
-        "reportDelay": 0,
+        "reportDelay": 2000,
         "userId": str(uid),
         "username": "",
         "userNickname": "",
         "product": "SaaS",
+        "releaseDate": TASK_EVENT_RELEASE_DATE,
+        "commit": TASK_EVENT_COMMIT,
         "ideName": "WorkBuddy",
         "ideType": "WorkBuddy",
         "ideVersion": TASK_EVENT_EXT_VERSION,
         "machineId": machine,
         "sessionId": session,
+        "qimei36": qimei,
         "extName": "workbuddy-desktop",
         "extVersion": TASK_EVENT_EXT_VERSION,
-        "os": "Windows",
-        "osVersion": "10",
+        "os": "win32",
+        "osVersion": TASK_EVENT_OS_VERSION,
         "arch": "x64",
+        "cpuModel": TASK_EVENT_CPU_MODEL,
+        "cpuCores": 20,
+        "memorySize": 24,
         "userAgent": CHAT_UA,
         "presentAt": int(time.time() * 1000),
     }
@@ -473,7 +485,10 @@ def _parse_task_sse(response):
 
 def web_task_conversation_session(token, uid, prompt, metadata=None):
     """建真实网页会话并完成一次 SSE 对话，返回服务端会话/消息 id。"""
-    ok, note, data, model = web_conversation_session(token, uid, prompt=prompt)
+    session = requests.Session()
+    session.trust_env = False
+    ok, note, data, model = web_conversation_session(
+        token, uid, prompt=prompt, session=session)
     if not ok:
         return False, note, {}, ""
     conversation_id = str(data.get("id") or data.get("conversationId") or "")
@@ -488,8 +503,6 @@ def web_task_conversation_session(token, uid, prompt, metadata=None):
     if isinstance(metadata, dict) and metadata:
         body["_meta"] = metadata
     headers = web_task_chat_headers(token, uid)
-    session = requests.Session()
-    session.trust_env = False
     response = session.post(
         BASE + "/console/chat/completions",
         headers=headers,
@@ -612,6 +625,10 @@ def growth_task_progress_text(row):
     return "%s %s/%s" % (status, current, target)
 
 
+def _growth_code_ok(code):
+    return code in (0, 200, "0", "200", None)
+
+
 def _check_growth_response(response, payload):
     if is_unapproved_channel(response.status_code, payload or response.text):
         raise UnapprovedChannel(
@@ -641,7 +658,7 @@ def fetch_growth_tasks(token, uid):
             payload = json_of(response)
             _check_growth_response(response, payload)
             code = payload.get("code") if isinstance(payload, dict) else None
-            if response.status_code != 200 or code not in (0, None):
+            if response.status_code != 200 or not _growth_code_ok(code):
                 errors.append("%s HTTP %s code=%s" % (path, response.status_code, code))
                 continue
             rows = ((payload.get("data") or {}).get("tasks")
@@ -694,7 +711,7 @@ def accept_growth_task(token, uid, task_code):
         )
         last_status = str(
             result.get("status") or payload.get("msg") or "")
-        if response.status_code != 200 or code not in (0, None):
+        if response.status_code != 200 or not _growth_code_ok(code):
             if attempt == 0:
                 time.sleep(1)
                 continue
@@ -735,7 +752,7 @@ def report_growth_events(token, uid, events):
     payload = json_of(response)
     _check_growth_response(response, payload)
     code = payload.get("code") if isinstance(payload, dict) else None
-    if response.status_code == 200 and code == 0:
+    if response.status_code == 200 and _growth_code_ok(code):
         return True, "任务事件已上报（%d 条）" % len(body)
     return False, "任务事件未确认 HTTP %s code=%s" % (response.status_code, code)
 
@@ -763,7 +780,7 @@ def claim_growth_task(token, uid, task_code):
         data.get(key) not in (None, "", 0, "0")
         for key in ("credit", "energy", "reward", "reward_credit", "reward_energy")
     )
-    if not (response.status_code == 200 and code in (0, None)
+    if not (response.status_code == 200 and _growth_code_ok(code)
             and (already or has_reward or data.get("claimed") is True)):
         return False, "领奖未确认 HTTP %s code=%s" % (
             response.status_code, code)
@@ -887,7 +904,7 @@ def fetch_task_expert(token, uid, expected_id=""):
         payload = json_of(response)
         _check_growth_response(response, payload)
         code = payload.get("code") if isinstance(payload, dict) else None
-        if response.status_code != 200 or code not in (0, None):
+        if response.status_code != 200 or not _growth_code_ok(code):
             return None, "专家市场 HTTP %s code=%s" % (response.status_code, code)
         rows = ((payload.get("data") or {}).get("experts")
                 if isinstance(payload, dict) else None)
@@ -937,7 +954,7 @@ def fetch_task_skill(token, uid):
     payload = json_of(response)
     _check_growth_response(response, payload)
     code = payload.get("code") if isinstance(payload, dict) else None
-    if response.status_code != 200 or code not in (0, None):
+    if response.status_code != 200 or not _growth_code_ok(code):
         return None, "技能市场 HTTP %s code=%s" % (response.status_code, code)
     rows = ((payload.get("data") or {}).get("skills")
             if isinstance(payload, dict) else None)
@@ -950,8 +967,11 @@ def fetch_task_skill(token, uid):
         skill_name = row.get("name") or row.get("display_name") or row.get("displayName")
         if isinstance(skill_name, dict):
             skill_name = skill_name.get("zh") or skill_name.get("en")
+        slug = row.get("slug") or row.get("plugin_name") or row.get("skill_slug")
+        slug = str(slug or skill_name or skill_id)
         return {
             "id": skill_id,
+            "slug": slug,
             "name": str(skill_name or skill_id),
         }, ""
     return None, "技能市场未返回可用技能"
@@ -969,7 +989,7 @@ def fetch_task_scene(token, uid):
     payload = json_of(response)
     _check_growth_response(response, payload)
     code = payload.get("code") if isinstance(payload, dict) else None
-    if response.status_code != 200 or code not in (0, None):
+    if response.status_code != 200 or not _growth_code_ok(code):
         return None, "场景表 HTTP %s code=%s" % (response.status_code, code)
     rows = ((payload.get("data") or {}).get("scenes")
             if isinstance(payload, dict) else None)
@@ -998,7 +1018,7 @@ def install_task_skill(token, uid, skill):
         check_payload = json_of(check)
         _check_growth_response(check, check_payload)
         check_code = check_payload.get("code") if isinstance(check_payload, dict) else None
-        if check.status_code != 200 or check_code not in (0, None):
+        if check.status_code != 200 or not _growth_code_ok(check_code):
             return False
         plugins = ((check_payload.get("data") or {}).get("plugins")
                    if isinstance(check_payload, dict) else None)
@@ -1007,7 +1027,8 @@ def install_task_skill(token, uid, skill):
                 continue
             name = str(row.get("plugin_name") or row.get("name") or "")
             plugin_id = str(row.get("id") or row.get("plugin_id") or "")
-            if name == skill["name"] or (skill.get("id") and plugin_id == skill["id"]):
+            if (name in (skill.get("slug"), skill.get("name"))
+                    or (skill.get("id") and plugin_id == skill["id"])):
                 return True
         return False
 
@@ -1022,7 +1043,7 @@ def install_task_skill(token, uid, skill):
     payload = json_of(response)
     _check_growth_response(response, payload)
     code = payload.get("code") if isinstance(payload, dict) else None
-    if response.status_code != 200 or code not in (0, None):
+    if response.status_code != 200 or not _growth_code_ok(code):
         return False, "技能来源 HTTP %s code=%s" % (response.status_code, code)
     rows = ((payload.get("data") or {}).get("sources")
             if isinstance(payload, dict) else None)
@@ -1036,7 +1057,7 @@ def install_task_skill(token, uid, skill):
         BASE + "/console/as/user/plugins/install",
         headers=growth_headers(token, uid),
         json={
-            "plugin_name": skill["name"],
+            "plugin_name": skill.get("slug") or skill["name"],
             "marketplace_id": marketplace_id,
             "version": "latest",
         },
@@ -1046,7 +1067,7 @@ def install_task_skill(token, uid, skill):
     payload = json_of(response)
     _check_growth_response(response, payload)
     code = payload.get("code") if isinstance(payload, dict) else None
-    if response.status_code == 200 and code in (0, None):
+    if response.status_code == 200 and _growth_code_ok(code):
         for _attempt in range(3):
             if installed():
                 return True, "技能安装成功（回读确认）"
@@ -1134,7 +1155,8 @@ def _skill_task_events(skill, conversation_id, request_id, message_id):
         if event.get("eventCode") == "chat_message_response":
             event["finishReason"] = "tool_calls"
     events.append({
-        "eventCode": "skill_info", "id": skill["name"], "skillId": skill["id"],
+        "eventCode": "skill_info", "id": skill.get("slug") or skill["name"],
+        "skillId": skill["id"],
         "skillVersion": "1.0.0", "toolStatus": "success", "fileCount": 0,
         "source": "workbuddy-desktop", "conversationId": conversation_id,
         "requestId": request_id, "messageId": message_id,
