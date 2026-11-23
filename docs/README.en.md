@@ -20,7 +20,7 @@
 
 - `workbuddy_daily.py`: WorkBuddy CN daily tasks, mini-program tasks, games, and reporting.
 - `workbuddy_login.py`: SMS login helper that outputs a ready-to-use `phone:AT:RT` credential.
-- `workbuddy_intl_daily.py`: WorkBuddy International daily activity and keepalive flow.
+- `workbuddy_intl_daily.py`: WorkBuddy International daily activity, keepalive, and five level tasks.
 - `workbuddy_intl_login.py`: device authorization helper for WorkBuddy International accounts.
 - `credits_report.py`: optional credit balance and expiry report.
 
@@ -64,6 +64,7 @@ python workbuddy_intl_daily.py
 ```
 
 Use `WORKBUDDY_INTL_TOKENS` for multiple accounts. Tokens are not interchangeable between CN and International domains.
+The script executes `first_chat`, `skill_installed`, `expert_summoned`, and `template_used` with server-side readback. `wechat_linked` is detected but must be completed in the official client. Use `--no-tasks` to skip these five tasks.
 
 ## Common variables
 

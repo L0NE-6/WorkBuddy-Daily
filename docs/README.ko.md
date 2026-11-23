@@ -20,7 +20,7 @@
 
 - `workbuddy_daily.py`: 중국판 일일 작업, 미니프로그램, 게임, 리포트.
 - `workbuddy_login.py`: SMS 로그인 후 `phone:AT:RT` 출력.
-- `workbuddy_intl_daily.py`: 국제판 일일 활동과 연결 유지.
+- `workbuddy_intl_daily.py`: 국제판 일일 활동, 연결 유지, 5개 레벨 작업.
 - `workbuddy_intl_login.py`: 국제판 기기 인증 로그인.
 - `credits_report.py`: 선택형 크레딧 잔액 및 만료 리포트.
 
@@ -64,6 +64,7 @@ python workbuddy_intl_daily.py
 ```
 
 중국판과 국제판 로그인 상태는 서로 호환되지 않습니다.
+`first_chat`, `skill_installed`, `expert_summoned`, `template_used`는 실제 작업 후 서버 상태를 다시 조회합니다. `wechat_linked`는 감지만 하며 공식 클라이언트에서 WeChat 연결을 완료해야 합니다. `--no-tasks`로 5개 작업을 건너뛸 수 있습니다.
 
 ## 주요 환경 변수
 

@@ -20,7 +20,7 @@
 
 - `workbuddy_daily.py`: tarefas diárias da versão CN, mini-programa, jogos e relatório.
 - `workbuddy_login.py`: login por SMS que gera `phone:AT:RT`.
-- `workbuddy_intl_daily.py`: atividade diária e keepalive da versão internacional.
+- `workbuddy_intl_daily.py`: atividade diária, keepalive e cinco tarefas de nível da versão internacional.
 - `workbuddy_intl_login.py`: login por autorização de dispositivo.
 - `credits_report.py`: relatório opcional de saldo e validade dos créditos.
 
@@ -64,6 +64,7 @@ python workbuddy_intl_daily.py
 ```
 
 As sessões das versões CN e internacional não são intercambiáveis.
+O script executa `first_chat`, `skill_installed`, `expert_summoned` e `template_used` com releitura do estado no servidor. `wechat_linked` é apenas detectado e deve ser concluído no cliente oficial. Use `--no-tasks` para ignorar essas cinco tarefas.
 
 ## Variáveis principais
 

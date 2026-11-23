@@ -395,6 +395,7 @@ class InternationalLockAndReportTests(unittest.TestCase):
                 mock.patch.object(MODULE, "claim_daily") as claim, \
                 mock.patch.object(MODULE, "keepalive") as keepalive, \
                 mock.patch.object(MODULE, "web_conversation") as web, \
+                mock.patch.object(MODULE, "run_growth_tasks") as growth_tasks, \
                 mock.patch.object(MODULE, "notify") as notify, \
                 mock.patch.object(MODULE.time, "sleep"), redirect_stdout(output):
             result = MODULE.main()
@@ -405,6 +406,7 @@ class InternationalLockAndReportTests(unittest.TestCase):
         claim.assert_not_called()
         keepalive.assert_not_called()
         web.assert_not_called()
+        growth_tasks.assert_not_called()
         notify.assert_not_called()
         self.assertIn("--report-only", MODULE.HELP_TEXT)
         self.assertIn("/v2/report", output.getvalue())
