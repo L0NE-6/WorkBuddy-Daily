@@ -437,6 +437,13 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertIn("WorkBuddy task-", session.post_calls[0][1]["json"]["name"])
         self.assertTrue(session.post_calls[1][0].endswith("/console/chat/completions"))
         self.assertEqual("conv-real", session.post_calls[1][1]["json"]["conversationId"])
+        self.assertEqual(
+            [
+                {"role": "system", "content": MODULE.SYSTEM_PROMPT},
+                {"role": "user", "content": "hello"},
+            ],
+            session.post_calls[1][1]["json"]["messages"],
+        )
         self.assertEqual("text/event-stream", session.post_calls[1][1]["headers"]["Accept"])
         self.assertEqual(MODULE.BASE + "/", session.post_calls[1][1]["headers"]["Referer"])
         self.assertEqual(

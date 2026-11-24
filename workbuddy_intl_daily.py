@@ -71,6 +71,7 @@ CLIENT_VERSION = "5.5.2"
 CLI_VERSION = "2.137.1"
 UA = "WorkBuddy/%s WorkBuddy AI/%s CLI/%s" % (CLIENT_VERSION, CLIENT_VERSION, CLI_VERSION)
 DEFAULT_MODELS = ("deepseek-v4.1-flash", "hy3", "hy4-preview", "hy4-preview-f")
+SYSTEM_PROMPT = "You are a helpful assistant."
 
 # 活跃链路的三个端点（见文件头「活跃」一节）
 REPORT_PATH = "/v2/report"
@@ -551,7 +552,10 @@ def web_task_conversation_session(token, uid, prompt, metadata=None):
     last_error = ""
     for model in model_chain():
         body = {
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
             "model": model,
             "stream": True,
             "conversationId": conversation_id,
@@ -1575,7 +1579,7 @@ def keepalive(token, uid):
             "stream": True,
             "max_tokens": 16,
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": "hi"},
             ],
         }

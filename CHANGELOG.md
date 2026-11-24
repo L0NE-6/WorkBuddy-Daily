@@ -1,5 +1,12 @@
 # 更新日志
 
+## v3.54（Release v56，2026-11-24）
+
+- 修复 Issue #63：国际版等级任务的 `/console/chat/completions` 请求缺少首条 system message，服务端返回 `HTTP 400 / code=11-128 / first message is not system prompt`。
+- `web_task_conversation_session()` 与 `keepalive()` 现在共用 `SYSTEM_PROMPT`，任务请求固定为 `system → user` 两段消息。
+- 新增网页任务消息结构回归，防止后续只发送 user message 导致四项等级任务再次全灭。
+- 任务完成仍以服务端 `completed / claimed` 回读为准，不以 HTTP 200 或事件上报冒充成功。
+
 ## v3.53（Release v55，2026-11-24）
 
 - 修复国际版等级任务真实对话：任务会话改走 `/console/webchat/conversations`，不再把每日活跃使用的 `/console/as/conversations/` 会话 ID 直接交给 `/console/chat/completions`。
