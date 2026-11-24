@@ -6,7 +6,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃与只读任务状态）**
 
-> 当前版本：**v57**（2026-11-24） · 最新更新：国际版等级任务改为只读，补积分余额前后回读，移除未经上游协议验证的完成事件
+> 当前版本：**v58**（2026-11-24） · 最新更新：统一六语文档中的国际版任务口径，默认只读核对，实验开关才尝试执行且不保证结算
 
 [简体中文](README.md) · [English](docs/README.en.md) · [繁體中文](docs/README.zh-Hant.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Português (BR)](docs/README.pt-BR.md)
 
@@ -470,7 +470,7 @@ python daily_forward.py daily.log --wx
 >
 > ⏳ **任务有效期**：部分任务由服务端下发 `valid_start` / `valid_end`（例如 `Buddy_App_QQ` 至 **2026-10-10**、`Hp_Appearance` 至 2026-11-02、`Expert_lighthouse` 至 2026-11-13、四个 `expert_use_*` 至 **2026-11-20**），过期后不再能领取。脚本每次运行会读取任务行并做两件事：`locked=true`（未到上线时间）直接跳过并给出解锁日；最终补领后按**终态未完成/未领奖**（不含 `claimed`、`claimed=true` 和本轮已确认领奖回执）检查 7 天内到期 / 已过期任务并打印 ⏰ 提醒，避免用开跑前快照误报。
 >
-> 🔎 **三源任务发现**：桌面 `/v2/activity/growth/tasks`、小程序 `/v2`、等级族无 `/v2` 的 `/activity/growth/tasks` 并不互为超集。国内版主脚本仍负责三源发现与分类；国际版 `workbuddy_intl_daily.py` 已单独接通 `first_chat / skill_installed / expert_summoned / template_used` 的执行与回读，`wechat_linked` 仍明确标记为客户端操作。
+> 🔎 **三源任务发现**：桌面 `/v2/activity/growth/tasks`、小程序 `/v2`、等级族无 `/v2` 的 `/activity/growth/tasks` 并不互为超集。国内版主脚本仍负责三源发现与分类；国际版 `workbuddy_intl_daily.py` 默认只读发现并核对等级任务，只有 `--experimental-intl-tasks` 才会尝试执行 `first_chat / skill_installed / expert_summoned / template_used` 并回读，事件成功不代表结算；`wechat_linked` 始终标记为客户端操作。
 
 ### 📦 已归档（不占主脚本）
 
@@ -724,7 +724,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v57`（2026-11-24，国际版等级任务只读与积分回读）· **脚本版本**：`v3.55` · **登录工具**：`v2.1`
+- **当前发布版**：`v58`（2026-11-24，国际版任务文档口径统一）· **脚本版本**：`v3.55` · **登录工具**：`v2.1`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 

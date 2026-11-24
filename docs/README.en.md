@@ -65,7 +65,7 @@ python workbuddy_intl_daily.py
 
 Use `WORKBUDDY_INTL_TOKENS` for multiple accounts. Tokens are not interchangeable between CN and International domains.
 International level tasks are read-only by default: the official provider marks `growth` as unsupported, so the script does not invent completion events.
-The script executes `first_chat`, `skill_installed`, `expert_summoned`, and `template_used` with server-side readback. `wechat_linked` is detected but must be completed in the official client. Use `--no-tasks` to skip these five tasks.
+By default, the script only reads and verifies these five tasks. `wechat_linked` must be completed in the official client. `--experimental-intl-tasks` may attempt `first_chat`, `skill_installed`, `expert_summoned`, and `template_used` for capture or regression testing, but event acceptance does not imply settlement. Use `--no-tasks` to skip all five tasks.
 
 ## Common variables
 

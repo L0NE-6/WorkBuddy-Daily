@@ -65,7 +65,7 @@ python workbuddy_intl_daily.py
 
 中国版と国際版のログイン状態は互換性がありません。
 国際版のレベルタスクは既定で読み取り専用です。公式 provider は `growth` を未対応としているため、完了イベントを捏造しません。
-`first_chat`、`skill_installed`、`expert_summoned`、`template_used` は実行後にサーバー状態を再取得します。`wechat_linked` は検出のみで、公式クライアントでの WeChat 連携が必要です。`--no-tasks` で 5 項目をスキップできます。
+既定ではこれら 5 項目を読み取って状態を確認するだけです。`wechat_linked` は公式クライアントでの WeChat 連携が必要です。`--experimental-intl-tasks` を指定した場合のみ `first_chat`、`skill_installed`、`expert_summoned`、`template_used` を試行して再取得しますが、イベント受信は決済を意味しません。`--no-tasks` で 5 項目をスキップできます。
 
 ## 主な環境変数
 

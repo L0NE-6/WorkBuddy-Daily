@@ -65,7 +65,7 @@ python workbuddy_intl_daily.py
 
 國內版與國際版登入態不通用，請勿混用 Token。
 國際版等級任務預設唯讀；官方 provider 標記 `growth` 不支援，腳本不會偽造完成事件。
-腳本會執行 `first_chat`、`skill_installed`、`expert_summoned`、`template_used` 並回讀服務端狀態；`wechat_linked` 只偵測，必須在官方客戶端綁定微信。可用 `--no-tasks` 跳過這 5 項。
+腳本預設只讀取並核對這 5 項任務；`wechat_linked` 必須在官方客戶端綁定微信。`--experimental-intl-tasks` 才會嘗試執行 `first_chat`、`skill_installed`、`expert_summoned`、`template_used` 並回讀，事件被接收不代表已結算。可用 `--no-tasks` 跳過這 5 項。
 
 ## 常用變數
 

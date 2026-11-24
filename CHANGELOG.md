@@ -1,5 +1,11 @@
 # 更新日志
 
+## v58（文档修订，2026-11-24）
+
+- 统一中文主 README 与英、繁中、日、韩、葡六语文档的国际版任务口径：默认只读核对，只有 `--experimental-intl-tasks` 才尝试执行 `first_chat / skill_installed / expert_summoned / template_used`。
+- 明确事件被服务端接收不等于任务完成或积分结算，避免文档把实验能力描述成默认可自动完成。
+- 脚本版本保持 `v3.55`，业务逻辑未变更。
+
 ## v3.55（Release v57，2026-11-24）
 
 - 修复 Issue #64：国际版官方 provider 明确 `growth:false`、`tasks.list=[]`、`tasks.run=501`，不存在等级任务结算协议；不再把国内成长中心事件硬套到国际版。
