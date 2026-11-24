@@ -409,7 +409,9 @@ class InternationalBehaviorTests(unittest.TestCase):
             'data: {"id":"cmb-real","choices":[{"delta":{"content":"OK"}}]}',
             "data: [DONE]",
         ]
-        response = StreamResponse(200, {}, lines)
+        create_response = Response(
+            200, {"code": 0, "data": {"conversationId": "conv-real"}})
+        chat_response = StreamResponse(200, {}, lines)
 
         class FakeSession:
             def __init__(self):
@@ -418,18 +420,11 @@ class InternationalBehaviorTests(unittest.TestCase):
 
             def post(self, url, **kwargs):
                 self.post_calls.append((url, kwargs))
-                return response
+                return create_response if len(self.post_calls) == 1 else chat_response
 
         session = FakeSession()
-        captured = {}
-
-        def create_session(token, uid, prompt="Hi", session=None):
-            captured["create_session"] = session
-            return True, "ok", {"id": "conv-real"}, "model-x"
-
-        with mock.patch.object(MODULE, "web_conversation_session",
-                               side_effect=create_session), \
-                mock.patch.object(MODULE.requests, "Session", return_value=session):
+        with mock.patch.object(MODULE.requests, "Session", return_value=session), \
+                mock.patch.object(MODULE, "model_chain", return_value=["model-x"]):
             ok, note, data, model = MODULE.web_task_conversation_session(
                 "token", "uid", "hello", metadata={"userId": "uid"})
 
@@ -438,13 +433,48 @@ class InternationalBehaviorTests(unittest.TestCase):
         self.assertEqual("conv-real", data["id"])
         self.assertEqual("cmb-real", data["messageId"])
         self.assertEqual("model-x", model)
-        self.assertTrue(session.post_calls[0][0].endswith("/console/chat/completions"))
-        self.assertEqual("text/event-stream", session.post_calls[0][1]["headers"]["Accept"])
-        self.assertEqual("uid", session.post_calls[0][1]["json"]["_meta"]["userId"])
-        self.assertIs(session, captured["create_session"])
+        self.assertTrue(session.post_calls[0][0].endswith("/console/webchat/conversations"))
+        self.assertIn("WorkBuddy task-", session.post_calls[0][1]["json"]["name"])
+        self.assertTrue(session.post_calls[1][0].endswith("/console/chat/completions"))
+        self.assertEqual("conv-real", session.post_calls[1][1]["json"]["conversationId"])
+        self.assertEqual("text/event-stream", session.post_calls[1][1]["headers"]["Accept"])
+        self.assertEqual(MODULE.BASE + "/", session.post_calls[1][1]["headers"]["Referer"])
+        self.assertEqual(
+            "web", session.post_calls[1][1]["headers"]["X-Client-Platform"])
+        self.assertEqual("uid", session.post_calls[1][1]["json"]["_meta"]["userId"])
+
+    def test_web_task_conversation_400_includes_server_reason(self):
+        create_response = Response(
+            200, {"code": 0, "data": {"conversationId": "conv-real"}})
+        bad_response = Response(
+            400,
+            {"code": 400001, "msg": "request data invalid"},
+            text='{"code":400001,"msg":"request data invalid"}',
+        )
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+                self.post_calls = []
+
+            def post(self, url, **kwargs):
+                self.post_calls.append((url, kwargs))
+                return create_response if len(self.post_calls) == 1 else bad_response
+
+        with mock.patch.object(MODULE.requests, "Session", return_value=FakeSession()), \
+                mock.patch.object(MODULE, "model_chain", return_value=["model-x"]):
+            ok, note, _data, _model = MODULE.web_task_conversation_session(
+                "token", "uid", "hello")
+
+        self.assertFalse(ok)
+        self.assertIn("HTTP 400", note)
+        self.assertIn("code=400001", note)
+        self.assertIn("request data invalid", note)
 
     def test_web_task_conversation_without_message_id_fails(self):
-        response = StreamResponse(200, {}, [
+        create_response = Response(
+            200, {"code": 0, "data": {"conversationId": "conv-real"}})
+        chat_response = StreamResponse(200, {}, [
             'data: {"choices":[{"delta":{"content":"OK"}}]}',
             "data: [DONE]",
         ])
@@ -452,18 +482,42 @@ class InternationalBehaviorTests(unittest.TestCase):
         class FakeSession:
             def __init__(self):
                 self.trust_env = True
+                self.count = 0
 
             def post(self, *args, **kwargs):
-                return response
+                self.count += 1
+                return create_response if self.count == 1 else chat_response
 
-        with mock.patch.object(MODULE, "web_conversation_session",
-                               return_value=(True, "ok", {"id": "conv-real"}, "model-x")), \
-                mock.patch.object(MODULE.requests, "Session", FakeSession):
+        with mock.patch.object(MODULE.requests, "Session", FakeSession), \
+                mock.patch.object(MODULE, "model_chain", return_value=["model-x"]):
             ok, note, _data, _model = MODULE.web_task_conversation_session(
                 "token", "uid", "hello")
 
         self.assertFalse(ok)
         self.assertIn("messageId", note)
+
+    def test_fetch_task_scene_uses_public_english_endpoint(self):
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+                self.get_calls = []
+
+            def get(self, url, **kwargs):
+                self.get_calls.append((url, kwargs))
+                return Response(200, {
+                    "code": 0,
+                    "data": {"scenes": [{"id": 1, "name": "Slides Creation"}]},
+                })
+
+        session = FakeSession()
+        with mock.patch.object(MODULE.requests, "Session", return_value=session):
+            scene, error = MODULE.fetch_task_scene("token", "uid")
+
+        self.assertEqual("", error)
+        self.assertEqual("1", scene["id"])
+        self.assertTrue(session.get_calls[0][0].endswith(
+            "/v2/as/support/scenes?locale=en"))
+        self.assertNotIn("Authorization", session.get_calls[0][1]["headers"])
 
     def test_install_skill_requires_installed_readback(self):
         sources = Response(200, {

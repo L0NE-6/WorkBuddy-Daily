@@ -76,6 +76,8 @@ DEFAULT_MODELS = ("deepseek-v4.1-flash", "hy3", "hy4-preview", "hy4-preview-f")
 REPORT_PATH = "/v2/report"
 STREAK_PATH = "/activity/growth/streak"
 WEB_CONVERSATIONS_PATH = "/console/as/conversations/"
+WEB_TASK_CONVERSATIONS_PATH = "/console/webchat/conversations"
+WEB_TASK_SCENES_PATH = "/v2/as/support/scenes?locale=en"
 GROWTH_TASKS_SOURCES = (
     ("level", "/activity/growth/tasks", "level"),
     ("desktop", "/v2/activity/growth/tasks", None),
@@ -413,11 +415,66 @@ def web_task_chat_headers(token, uid):
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
         "Origin": BASE,
-        "Referer": BASE + "/profile/growth-center",
+        "Referer": BASE + "/",
         "User-Agent": WEB_UA,
         "X-Domain": "www.workbuddy.ai",
+        "X-Product": "SaaS",
+        "X-Client-Platform": "web",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CodeBuddy-Request": "1",
+        "Accept-Language": "en-US",
         "X-User-Id": uid,
     }
+
+
+def _web_task_response_detail(response, payload):
+    """Return a short server-side reason without dumping full response data."""
+    code = payload.get("code") if isinstance(payload, dict) else None
+    message = first_text(
+        payload.get("message"), payload.get("msg"), payload.get("errorMessage"),
+        payload.get("error")) if isinstance(payload, dict) else ""
+    parts = []
+    if code not in (None, 0, "0"):
+        parts.append("code=%s" % code)
+    if message:
+        parts.append(message)
+    if not parts:
+        try:
+            text = str(response.text or "").strip()
+        except Exception:
+            text = ""
+        if text:
+            parts.append(text[:200])
+    return "：%s" % "，".join(parts) if parts else ""
+
+
+def create_web_task_conversation(token, uid, session=None):
+    """Create a webchat conversation accepted by /console/chat/completions."""
+    if not uid:
+        return False, "缺少账号 uid，无法建网页任务会话", ""
+    session = session or requests.Session()
+    session.trust_env = False
+    headers = web_task_chat_headers(token, uid)
+    headers["Accept"] = "application/json"
+    body = {"name": "WorkBuddy task-%s" % uuid.uuid4().hex[:8]}
+    response = session.post(
+        BASE + WEB_TASK_CONVERSATIONS_PATH,
+        headers=headers,
+        json=body,
+        timeout=20,
+        verify=False,
+    )
+    payload = json_of(response)
+    _check_growth_response(response, payload)
+    code = payload.get("code") if isinstance(payload, dict) else None
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    conversation_id = first_text(data.get("conversationId"), data.get("id"))
+    if response.status_code != 200 or not _growth_code_ok(code) or not conversation_id:
+        detail = _web_task_response_detail(response, payload)
+        return False, "网页任务会话创建失败（HTTP %s%s）" % (
+            response.status_code, detail), ""
+    return True, "", conversation_id
 
 
 def _task_identity(uid):
@@ -487,54 +544,59 @@ def web_task_conversation_session(token, uid, prompt, metadata=None):
     """建真实网页会话并完成一次 SSE 对话，返回服务端会话/消息 id。"""
     session = requests.Session()
     session.trust_env = False
-    ok, note, data, model = web_conversation_session(
-        token, uid, prompt=prompt, session=session)
+    ok, note, conversation_id = create_web_task_conversation(
+        token, uid, session=session)
     if not ok:
         return False, note, {}, ""
-    conversation_id = str(data.get("id") or data.get("conversationId") or "")
-    if not conversation_id:
-        return False, "网页会话未返回 conversationId", {}, model
-    body = {
-        "messages": [{"role": "user", "content": prompt}],
-        "model": model,
-        "stream": True,
-        "conversationId": conversation_id,
-    }
-    if isinstance(metadata, dict) and metadata:
-        body["_meta"] = metadata
-    headers = web_task_chat_headers(token, uid)
-    response = session.post(
-        BASE + "/console/chat/completions",
-        headers=headers,
-        json=body,
-        timeout=90,
-        verify=False,
-        stream=True,
-    )
-    try:
-        payload = json_of(response) if response.status_code != 200 else {}
-        _check_growth_response(response, payload)
-        if response.status_code != 200:
-            return False, "网页对话 HTTP %s" % response.status_code, {}, model
+    last_error = ""
+    for model in model_chain():
+        body = {
+            "messages": [{"role": "user", "content": prompt}],
+            "model": model,
+            "stream": True,
+            "conversationId": conversation_id,
+        }
+        if isinstance(metadata, dict) and metadata:
+            body["_meta"] = metadata
+        headers = web_task_chat_headers(token, uid)
+        response = session.post(
+            BASE + "/console/chat/completions",
+            headers=headers,
+            json=body,
+            timeout=90,
+            verify=False,
+            stream=True,
+        )
         try:
-            finished, text, server_message_id = _parse_task_sse(response)
-        except (AccountRestricted, UnapprovedChannel):
-            raise
-        except Exception as error:
-            return False, "网页对话流读取失败: %s" % str(error)[:80], {}, model
-    finally:
-        try:
-            response.close()
-        except Exception:
-            pass
-    if not finished or not server_message_id:
-        return False, "网页对话未完成或缺少服务端 messageId", {}, model
-    return True, "网页对话已完成", {
-        "id": conversation_id,
-        "requestId": server_message_id,
-        "messageId": server_message_id,
-        "text": text,
-    }, model
+            payload = json_of(response) if response.status_code != 200 else {}
+            _check_growth_response(response, payload)
+            if response.status_code != 200:
+                last_error = "网页对话 HTTP %s%s" % (
+                    response.status_code,
+                    _web_task_response_detail(response, payload))
+                continue
+            try:
+                finished, text, server_message_id = _parse_task_sse(response)
+            except (AccountRestricted, UnapprovedChannel):
+                raise
+            except Exception as error:
+                last_error = "网页对话流读取失败: %s" % str(error)[:80]
+                continue
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+        if not finished or not server_message_id:
+            last_error = "网页对话未完成或缺少服务端 messageId"
+            continue
+        return True, "网页对话已完成", {
+            "id": conversation_id,
+            "requestId": server_message_id,
+            "messageId": server_message_id,
+            "text": text,
+        }, model
+    return False, last_error or "网页对话失败（模型链全部未完成）", {}, ""
 
 
 def growth_task_code(row):
@@ -981,8 +1043,8 @@ def fetch_task_scene(token, uid):
     session = requests.Session()
     session.trust_env = False
     response = session.get(
-        BASE + "/console/as/support/scenes?locale=en-US",
-        headers=growth_headers(token, uid),
+        BASE + WEB_TASK_SCENES_PATH,
+        headers={"Accept": "application/json", "User-Agent": WEB_UA},
         timeout=20,
         verify=False,
     )

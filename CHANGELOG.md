@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.53（Release v55，2026-11-24）
+
+- 修复国际版等级任务真实对话：任务会话改走 `/console/webchat/conversations`，不再把每日活跃使用的 `/console/as/conversations/` 会话 ID 直接交给 `/console/chat/completions`。
+- 对齐国际版网页对话请求头：根路径 Referer、`X-Requested-With`、`X-CodeBuddy-Request`、`X-Product` 与英文语言头。
+- `/console/chat/completions` 非 200 时带出脱敏后的服务端 `code / msg / text[:200]`，不再只显示 HTTP 400。
+- 修复 `template_used` 场景表：改用公开的 `/v2/as/support/scenes?locale=en`；旧 `en-US` 返回空列表，导致稳定报“场景表未返回可用模板”。
+- 主脚本积分查询新增 `get-user-resource` 到期明细：月度套餐显示月底清零，活动赠送积分显示逐笔到期时间；结果同步到账号日志和推送摘要。
+- 新增任务会话路径、400 响应体透出、英文场景表、积分到期解析与查询集成回归；任务完成仍以服务端状态回读为准。
+
 ## v3.52（Release v54，2026-11-23）
 
 - 国际版 `workbuddy_intl_daily.py` 新增 5 项等级任务适配：`first_chat`、`skill_installed`、`wechat_linked`、`expert_summoned`、`template_used`。
