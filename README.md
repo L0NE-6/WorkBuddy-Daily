@@ -428,6 +428,8 @@ python daily_forward.py daily.log --wx
 >
 > 另外两种体检看不出来的情况：③ 该 RT 已被其他工具（面板/网关/另一台机器）轮换过；④ 粘的是 `CodeBuddyExtension\Data\Public\auth` 里**别的应用**的 token。最稳的做法：`python workbuddy_login.py` 重新登录拿最新一行。
 
+> ⚠️ **日志出现 `invalid_grant: refresh token revoked` 怎么办？** 这不是格式错误，而是服务端已经轮换或撤销了这个 RT，旧 RT 不能再使用。青龙用户请把 `WORKBUDDY_STATE_DIR` 指到持久目录（例如 `/ql/data/workbuddy_state`），确认同一账号没有两个定时任务或两台机器同时续期；然后重新运行 `python workbuddy_login.py`，把最新输出的 `手机号:AT:RT` 更新到环境变量。公开 Actions/Fork 不会提交轮换后的 `wb_refresh_tokens.json`，需要手动维护 Secret；私有仓库或持久状态目录才会自动保存新 RT。若更新后仍立即报 revoked，先检查是否有其他工具正在使用同一账号。
+
 ---
 
 ## 🧭 任务结果语义
