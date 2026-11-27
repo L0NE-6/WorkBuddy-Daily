@@ -76,7 +76,7 @@ By default, the script only reads and verifies these five tasks. `wechat_linked`
 | `WORKBUDDY_TASKS` | Optional task allowlist |
 | `WORKBUDDY_SKIP_TASKS` | Optional task denylist |
 | `WORKBUDDY_STATE_DIR` | Persistent state directory for rotated tokens |
-| `PUSHPLUS_TOKEN`, `BARK_URL`, `WXPUSHER_APP_TOKEN`, `WECOM_WEBHOOK`, `DINGTALK_WEBHOOK` | Optional notification channels |
+| `PUSHPLUS_TOKEN` / `PLUSPLUS_TOKEN`, `BARK_URL`, `WXPUSHER_APP_TOKEN`, `WECOM_WEBHOOK`, `DINGTALK_WEBHOOK` | Optional notification channels |
 
 ## Security
 

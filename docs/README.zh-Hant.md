@@ -76,7 +76,7 @@ python workbuddy_intl_daily.py
 | `WORKBUDDY_TASKS` | 可選任務白名單 |
 | `WORKBUDDY_SKIP_TASKS` | 可選任務黑名單 |
 | `WORKBUDDY_STATE_DIR` | 持久化 Token 輪換狀態的目錄 |
-| `PUSHPLUS_TOKEN`、`BARK_URL`、`WXPUSHER_APP_TOKEN`、`WECOM_WEBHOOK`、`DINGTALK_WEBHOOK` | 可選推送渠道 |
+| `PUSHPLUS_TOKEN` / `PLUSPLUS_TOKEN`、`BARK_URL`、`WXPUSHER_APP_TOKEN`、`WECOM_WEBHOOK`、`DINGTALK_WEBHOOK` | 可選推送渠道 |
 
 ## 安全提醒
 

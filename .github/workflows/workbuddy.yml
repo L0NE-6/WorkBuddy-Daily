@@ -86,6 +86,7 @@ jobs:
           WORKBUDDY_INTL_TOKENS: ${{ secrets.WORKBUDDY_INTL_TOKENS }}
           WORKBUDDY_TOKEN: ${{ secrets.WORKBUDDY_TOKEN }}
           WORKBUDDY_INTL_MODELS: ${{ secrets.WORKBUDDY_INTL_MODELS }}
+          PLUSPLUS_TOKEN: ${{ secrets.PLUSPLUS_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           BARK_URL: ${{ secrets.BARK_URL }}
           WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}

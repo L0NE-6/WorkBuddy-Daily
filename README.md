@@ -6,7 +6,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃与只读任务状态）**
 
-> 当前版本：**v58**（2026-11-24） · 最新更新：统一六语文档中的国际版任务口径，默认只读核对，实验开关才尝试执行且不保证结算
+> 当前版本：**v59**（2026-11-26） · 最新更新：修复国际版 PushPlus 通知变量传递，兼容 `PUSHPLUS_TOKEN`
 
 [简体中文](README.md) · [English](docs/README.en.md) · [繁體中文](docs/README.zh-Hant.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Português (BR)](docs/README.pt-BR.md)
 
@@ -158,6 +158,7 @@ pip3 install requests
 | `WORKBUDDY_TOKEN` | ⬜ | 国际版单账号兜底（登录态） |
 | `WORKBUDDY_INTL_MODELS` | ⬜ | 可选，国际版保活模型链，逗号分隔 |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
+| `PLUSPLUS_TOKEN` | ⬜ | 国际版 PushPlus 别名；也兼容 `PUSHPLUS_TOKEN` |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），在 wxpusher.zjiecode.com 创建应用后获得 |
 | `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头），多个用逗号/分号分隔 |
@@ -755,7 +756,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v58`（2026-11-24，国际版任务文档口径统一）· **脚本版本**：`v3.55` · **登录工具**：`v2.1`
+- **当前发布版**：`v59`（2026-11-26，国际版 PushPlus 变量传递修复）· **脚本版本**：`v3.55` · **登录工具**：`v2.1`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 

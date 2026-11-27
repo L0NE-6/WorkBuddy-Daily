@@ -35,7 +35,7 @@ WorkBuddy AI（国际版）每日活跃与等级任务 - 青龙脚本
   WORKBUDDY_TOKEN        单账号兜底（国际版登录态）
   WORKBUDDY_INTL_MODELS  可选，保活模型链，逗号分隔；默认官方免费的四个
   QYWX_TOKEN             企业微信机器人（也兼容 WECHAT_WEBHOOK）
-  PLUSPLUS_TOKEN         PushPlus
+  PLUSPLUS_TOKEN         PushPlus（兼容 PUSHPLUS_TOKEN 别名）
   NO_NOTIFY              设 1 关闭推送
 
 用法：
@@ -2090,10 +2090,11 @@ def notify(text, title="WorkBuddy AI 每日活跃与等级任务"):
                           json={"msgtype": "text", "text": {"content": title + "\n" + raw}}, timeout=15)
         except Exception as error:
             log("⚠️ 企业微信推送失败: %s" % error)
-    token = os.getenv("PLUSPLUS_TOKEN", "").strip()
+    token = (os.getenv("PLUSPLUS_TOKEN", "").strip()
+             or os.getenv("PUSHPLUS_TOKEN", "").strip())
     if token:
         try:
-            requests.post("http://www.pushplus.plus/send",
+            requests.post("https://www.pushplus.plus/send",
                           json={"token": token, "title": title, "content": raw, "template": "txt"}, timeout=15)
         except Exception as error:
             log("⚠️ PushPlus 推送失败: %s" % error)

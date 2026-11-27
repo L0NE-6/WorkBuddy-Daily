@@ -76,7 +76,7 @@ python workbuddy_intl_daily.py
 | `WORKBUDDY_TASKS` | 実行対象タスクの許可リスト |
 | `WORKBUDDY_SKIP_TASKS` | スキップするタスクの拒否リスト |
 | `WORKBUDDY_STATE_DIR` | ローテーション済み Token の永続保存先 |
-| `PUSHPLUS_TOKEN`、`BARK_URL`、`WXPUSHER_APP_TOKEN`、`WECOM_WEBHOOK`、`DINGTALK_WEBHOOK` | 任意の通知チャネル |
+| `PUSHPLUS_TOKEN` / `PLUSPLUS_TOKEN`、`BARK_URL`、`WXPUSHER_APP_TOKEN`、`WECOM_WEBHOOK`、`DINGTALK_WEBHOOK` | 任意の通知チャネル |
 
 ## セキュリティ
 

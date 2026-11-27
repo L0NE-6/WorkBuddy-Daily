@@ -1,5 +1,11 @@
 # 更新日志
 
+## v59（2026-11-26）
+
+- 修复 Issue #66：国际版 workflow 现在显式传递 `PLUSPLUS_TOKEN`，同时保留 `PUSHPLUS_TOKEN` 兼容路径。
+- 国际版 `notify()` 优先读取 `PLUSPLUS_TOKEN`，为空时回落 `PUSHPLUS_TOKEN`，不再因为变量名不同而静默跳过 PushPlus。
+- 新增 PushPlus 环境变量别名回归；脚本版本保持 `v3.55`，业务逻辑未变更。
+
 ## v58（文档修订，2026-11-24）
 
 - 统一中文主 README 与英、繁中、日、韩、葡六语文档的国际版任务口径：默认只读核对，只有 `--experimental-intl-tasks` 才尝试执行 `first_chat / skill_installed / expert_summoned / template_used`。

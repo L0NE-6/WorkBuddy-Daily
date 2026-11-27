@@ -76,7 +76,7 @@ Por padrão, o script apenas lê e verifica essas cinco tarefas. `wechat_linked`
 | `WORKBUDDY_TASKS` | Lista opcional de tarefas permitidas |
 | `WORKBUDDY_SKIP_TASKS` | Lista opcional de tarefas ignoradas |
 | `WORKBUDDY_STATE_DIR` | Diretório persistente para tokens rotacionados |
-| `PUSHPLUS_TOKEN`, `BARK_URL`, `WXPUSHER_APP_TOKEN`, `WECOM_WEBHOOK`, `DINGTALK_WEBHOOK` | Canais opcionais de notificação |
+| `PUSHPLUS_TOKEN` / `PLUSPLUS_TOKEN`, `BARK_URL`, `WXPUSHER_APP_TOKEN`, `WECOM_WEBHOOK`, `DINGTALK_WEBHOOK` | Canais opcionais de notificação |
 
 ## Segurança
 

@@ -76,7 +76,7 @@ python workbuddy_intl_daily.py
 | `WORKBUDDY_TASKS` | 선택 실행 작업 허용 목록 |
 | `WORKBUDDY_SKIP_TASKS` | 건너뛸 작업 차단 목록 |
 | `WORKBUDDY_STATE_DIR` | 회전된 Token의 영구 저장 경로 |
-| `PUSHPLUS_TOKEN`, `BARK_URL`, `WXPUSHER_APP_TOKEN`, `WECOM_WEBHOOK`, `DINGTALK_WEBHOOK` | 선택형 알림 채널 |
+| `PUSHPLUS_TOKEN` / `PLUSPLUS_TOKEN`, `BARK_URL`, `WXPUSHER_APP_TOKEN`, `WECOM_WEBHOOK`, `DINGTALK_WEBHOOK` | 선택형 알림 채널 |
 
 ## 보안
 

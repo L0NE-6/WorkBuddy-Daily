@@ -1,7 +1,9 @@
 import importlib.util
 import io
+import os
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 from pathlib import Path
 
@@ -78,6 +80,37 @@ class InternationalBehaviorTests(unittest.TestCase):
         finally:
             MODULE.requests.Session = old_session
             MODULE.model_chain = old_chain
+
+    def test_pushplus_accepts_pushplus_token_alias(self):
+        with mock.patch.dict(os.environ, {
+                "PUSHPLUS_TOKEN": "legacy-pushplus",
+                "PLUSPLUS_TOKEN": "",
+        }, clear=True), mock.patch.object(MODULE.requests, "post") as post:
+            MODULE.notify("report")
+
+        post.assert_called_once()
+        self.assertIn("pushplus.plus", post.call_args.args[0])
+        self.assertTrue(post.call_args.args[0].startswith("https://"))
+        self.assertEqual(
+            "legacy-pushplus", post.call_args.kwargs["json"]["token"])
+
+    def test_pushplus_prefers_plusplus_token(self):
+        with mock.patch.dict(os.environ, {
+                "PUSHPLUS_TOKEN": "legacy-pushplus",
+                "PLUSPLUS_TOKEN": "primary-pushplus",
+        }, clear=True), mock.patch.object(MODULE.requests, "post") as post:
+            MODULE.notify("report")
+
+        post.assert_called_once()
+        self.assertEqual(
+            "primary-pushplus", post.call_args.kwargs["json"]["token"])
+
+    def test_intl_workflow_injects_both_pushplus_names(self):
+        workflow = (Path(__file__).resolve().parents[1]
+                    / ".github/workflows/workbuddy.yml").read_text(encoding="utf-8")
+        intl_step = workflow.split("- name: Run WorkBuddy Intl", 1)[1]
+        self.assertIn("PLUSPLUS_TOKEN:", intl_step)
+        self.assertIn("PUSHPLUS_TOKEN:", intl_step)
 
     def test_preflight_stops_on_11140_before_refresh_or_writes(self):
         MODULE.post_json = lambda *args, **kwargs: Response(
